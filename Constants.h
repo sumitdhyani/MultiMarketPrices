@@ -8,7 +8,8 @@ enum class MetaEnum
     MessageType,
     Tags,
     HeaderKey,
-    TagValues
+    TagValues,
+    MiddlewareConfig
 };
 
 template<MetaEnum Enum>
@@ -178,7 +179,6 @@ struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
     }
 };
 
-
 struct Tags : StringEnum<MetaEnum::Tags, Tags>
 {
     static Tags const& message_type()
@@ -211,6 +211,45 @@ struct HeaderKey : StringEnum<MetaEnum::HeaderKey, HeaderKey>
     static HeaderKey const& respId()
     { 
         static HeaderKey instance{"respId"};
+        return instance;
+    }
+};
+
+struct MiddlewareConfig : StringEnum<MetaEnum::MiddlewareConfig, MiddlewareConfig>
+{
+    static MiddlewareConfig const& bootstrap_servers()
+    { 
+        static MiddlewareConfig instance{"bootstrap.servers"};
+        return instance;
+    }
+    
+    static MiddlewareConfig const& group_id()
+    { 
+        static MiddlewareConfig instance{"group.id"};
+        return instance;
+    }
+    
+    static MiddlewareConfig const& enable_auto_commit()
+    { 
+        static MiddlewareConfig instance{"enable.auto.commit"};
+        return instance;
+    }
+    
+    static MiddlewareConfig const& auto_commit_interval_ms()
+    { 
+        static MiddlewareConfig instance{"auto.commit.interval.ms"};
+        return instance;
+    }
+    
+    static MiddlewareConfig const& session_timeout_ms()
+    { 
+        static MiddlewareConfig instance{"session.timeout.ms"};
+        return instance;
+    }
+    
+    static MiddlewareConfig const& auto_offset_reset()
+    { 
+        static MiddlewareConfig instance{"auto.offset.reset"};
         return instance;
     }
 };

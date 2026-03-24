@@ -4,11 +4,12 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+#include <exception>
 #include <stdint.h>
-#include "../Constants.h"
-#include "./modern-cpp-kafka/include/kafka/Error.h"
+#include <kafka/Error.h>
+#include "Constants.h"
 
-using error  = KAFKA_API::Error;
+using error  = std::tuple<int, std::string>;
 using ErrCallback = std::function<void(const error&)>;
 
 using KeyValuePairs = std::unordered_map<HeaderKey,std::string>;
@@ -32,10 +33,11 @@ using MsgCallback = std::function<void (const std::string&,     // Topic
 using ConsumerFunc = std::function<void (const std::string& topic)>;
 
 using InitCallback = std::function<void(const ProducerFunc&,
-                                        const ConsumerFunc&,
-                                        const ErrCallback&)>;
+                                        const ConsumerFunc&)>;
 
 void initializeMiddleWare(const MsgCallback&,
                           const DescriptionFunc&,
                           const InitCallback&,
-                          const std::unordered_map<std::string, std::string>&);
+                          const ErrCallback&,
+                          const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
+                          const std::unordered_map<MiddlewareConfig, std::string>& consumerProps);

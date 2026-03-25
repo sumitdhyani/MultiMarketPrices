@@ -7,12 +7,12 @@
 #include <exception>
 #include <tuple>
 #include <stdint.h>
-#include <Timer.hpp>
-#include <WorkerThread.hpp>
+#include <MTTools/Timer.hpp>
+#include <MTTools/WorkerThread.hpp>
 #include <kafka/Error.h>
 #include <kafka/KafkaProducer.h>
 #include <kafka/KafkaConsumer.h>
-#include "Constants.h"
+#include <Constants.h>
 
 
 namespace Middleware

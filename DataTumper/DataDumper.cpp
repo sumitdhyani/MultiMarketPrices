@@ -1,10 +1,10 @@
 #include <iostream>
 #include <chrono>
-#include "TaskScheduler.hpp"
-#include "WorkerThread.hpp"
-#include "PropertyTree.hpp"
-#include "Interface.h"
-#include "Constants.h"
+#include <MTTools/TaskScheduler.hpp>
+#include <MTTools/WorkerThread.hpp>
+#include <CommonUtils/PropertyTree.hpp>
+#include <MiddleWare/Interface.h>
+#include <Constants.h>
 
 using PropertyTree = ULCommonUtils::PropertyTree<std::string, std::string, int>;
 using Timer = ULMTTools::Timer;

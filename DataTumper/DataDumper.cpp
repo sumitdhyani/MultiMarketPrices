@@ -59,11 +59,11 @@ std::string getDescMsg()
 
 void initErrorCb(const Middleware::Error& err)
 {
-    std::cerr << "Error while initializing Middleware: " << err.value() << ", " << err.message() << std::endl;
+    std::cout << "Error while initializing Middleware: " << err.value() << ", " << err.message() << std::endl;
 }
 
 void runningErrorCb(const Middleware::Error& error) {
-    std::cerr << "[ERROR CALLBACK] Code: " << error.value() 
+    std::cout << "[ERROR CALLBACK] Code: " << error.value() 
                 << " | Message: " << error.message() 
                 << " | Fatal: " << (error.isFatal() ? "YES" : "NO") 
                 << std::endl;
@@ -115,10 +115,6 @@ int main()
         );
 
         individualConsumerFunc(*Topic::prices(), nullptr);
-
-        int n;
-        std::cin >> n;
-        std::cout << "Exiting";
     };
 
     std::string heartBeatStr = getHeartBeatMsg();

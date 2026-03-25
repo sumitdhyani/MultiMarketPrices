@@ -28,10 +28,9 @@ namespace Middleware
 {
 
 void consumptionThread(KafkaConsumer& consumer,
-                    Worker& worker,
+                        Worker& worker,
                     const MsgCallback& msgCallback)
 {
-    using namespace Middleware;
     while(true)
     {
         auto records = consumer.poll(std::chrono::milliseconds(100));
@@ -183,7 +182,7 @@ void initializeMiddleWare(const std::string& appId,
             kafkaProducerProps.put(*key, value);
         }
         enrichProducerPropsWithErrorCb(kafkaProducerProps, errCallback);
-        auto producer = std::make_shared<KafkaProducer>(kafkaProducerProps);
+        producer = std::make_shared<KafkaProducer>(kafkaProducerProps);
 
         Properties kafkaConsumerProps;
         for (auto const& [key, value] : consumerProps)
@@ -193,10 +192,10 @@ void initializeMiddleWare(const std::string& appId,
         enrichProducerPropsWithErrorCb(kafkaConsumerProps, errCallback);
 
         kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appGroup);
-        auto groupConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
+        groupConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
 
         kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appId);
-        auto individualConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
+        individualConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
     }
     catch(const Error& e)
     {
@@ -347,20 +346,18 @@ void initializeMiddleWare(const std::string& appId,
         consumptionThread(*groupConsumer, *kafkaWorker, msgCallback);
     });
         
-    std::thread icThread([individualConsumer, kafkaWorker, msgCallback]() {
-        consumptionThread(*individualConsumer, *kafkaWorker, msgCallback);
-    });
-
-    timer->install([producerFunc, errCallback, appId]() {
+    timer->install([producerFunc, errCallback, appId, heartBeatGenFunc]() {
         producerFunc(*Topic::heartbeats(),
                     MessageType::heartBeat(),
                     appId,
-                    "", 
+                    heartBeatGenFunc(),
                     {},
                     internalSendCallback);
     }, std::chrono::seconds(heartbeatIntervalSec));
 
     initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc);
+
+    consumptionThread(*individualConsumer, *kafkaWorker, msgCallback);
 }
 
 }

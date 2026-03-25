@@ -68,8 +68,33 @@ void consumptionThread(KafkaConsumer& consumer,
 }
 
 
-void sendCallback(const Middleware::RecordMetadata& rm, const Middleware::Error& e)
+void internalSendCallback(const Middleware::RecordMetadata& rm, const Middleware::Error& e)
 {
+
+}
+
+void enrichProducerPropsWithErrorCb(Properties& props)
+{
+    props.put("error_cb", [](const Middleware::Error& error) {
+        std::cerr << "[ERROR CALLBACK] Code: " << error.value() 
+                  << " | Message: " << error.message() 
+                  << " | Fatal: " << (error.isFatal() ? "YES" : "NO") 
+                  << std::endl;
+
+        // Connection related errors handle karo
+        if (error.value() == RD_KAFKA_RESP_ERR__TRANSPORT ||
+            error.value() == RD_KAFKA_RESP_ERR__ALL_BROKERS_DOWN ||
+            error.value() == RD_KAFKA_RESP_ERR_NETWORK_EXCEPTION) {
+            
+            std::cout << ">>> Broker Disconnected / Network issue detected! Reconnecting...\n";
+            // Yahan tum reconnection logic daal sakte ho
+            // ya alert bhej sakte ho (Prometheus, Slack, email etc.)
+        }
+
+        if (error.isFatal()) {
+            std::cerr << ">>> FATAL ERROR! Application should probably shutdown/restart.\n";
+        }
+    });
 }
 
 void Middleware::initializeMiddleWare(const std::string& appId,
@@ -96,7 +121,7 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         {
             kafkaProducerProps.put(*key, value);
         }
-
+        enrichProducerPropsWithErrorCb(kafkaProducerProps);
         producer = std::make_shared<KafkaProducer>(kafkaProducerProps);
 
         Properties kafkaConsumerProps;
@@ -104,6 +129,7 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         {
             kafkaConsumerProps.put(*key, value);    
         }
+        enrichProducerPropsWithErrorCb(kafkaConsumerProps);
 
         kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appGroup);
         groupConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
@@ -111,19 +137,23 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appId);
         individualConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
     }
-    catch(const kafka::Error& e)
+    catch(const Middleware::Error& e)
     {
-        errCallback({e.value(), e.message()});
+        errCallback(e);
         return;
     }
     catch(const std::exception& e)
     {
-        errCallback({-1, e.what()});
+        //Middleware::Error error(RD_KAFKA_RESP_ERR_UNKNOWN, e.what());
+        Middleware::Error error(RD_KAFKA_RESP_ERR_UNKNOWN);
+        errCallback(error);
         return;
     }
     catch(...)
     {
-        errCallback({-1, "Unknown error during middleware initialization"});
+        //Middleware::Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unknown error during middleware initialization");
+        Middleware::Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unknown error during middleware initialization");
+        errCallback(error);
         return;
     }
 
@@ -266,7 +296,7 @@ void Middleware::initializeMiddleWare(const std::string& appId,
                      appId,
                      "", 
                      {},
-                     sendCallback);
+                     internalSendCallback);
     }, std::chrono::seconds(heartbeatIntervalSec));
 
     initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc);

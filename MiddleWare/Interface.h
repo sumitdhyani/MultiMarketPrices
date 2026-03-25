@@ -19,8 +19,7 @@ namespace Middleware
 {
     using RecordMetadata            = kafka::clients::producer::RecordMetadata;
     using Error                     = kafka::Error;
-    using error                     = std::tuple<int, std::string>;
-    using ErrCallback               = std::function<void(const error&)>;
+    using ErrCallback               = std::function<void(const Error&)>;
     using SendCallback              = std::function<void(const RecordMetadata&, const Error&)>;
     using KeyValuePairs             = std::unordered_map<HeaderKey,std::string>;
 

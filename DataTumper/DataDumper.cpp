@@ -57,9 +57,30 @@ std::string getDescMsg()
 }
 
 
-void initErrorCb(const Middleware::error& err)
+void initErrorCb(const Middleware::Error& err)
 {
-    std::cerr << "Error while initializing Middleware: " << std::get<0>(err) << ", " << std::get<1>(err) << std::endl;
+    std::cerr << "Error while initializing Middleware: " << err.value() << ", " << err.message() << std::endl;
+}
+
+void runningErrorCb(const Middleware::Error& error) {
+    std::cerr << "[ERROR CALLBACK] Code: " << error.value() 
+                << " | Message: " << error.message() 
+                << " | Fatal: " << (error.isFatal() ? "YES" : "NO") 
+                << std::endl;
+
+    // Connection related errors handle karo
+    if (error.value() == RD_KAFKA_RESP_ERR__TRANSPORT ||
+        error.value() == RD_KAFKA_RESP_ERR__ALL_BROKERS_DOWN ||
+        error.value() == RD_KAFKA_RESP_ERR_NETWORK_EXCEPTION) {
+        
+        std::cout << ">>> Broker Disconnected / Network issue detected! Reconnecting...\n";
+        // Yahan tum reconnection logic daal sakte ho
+        // ya alert bhej sakte ho (Prometheus, Slack, email etc.)
+    }
+
+    if (error.isFatal()) {
+        std::cerr << ">>> FATAL ERROR! Application should probably shutdown/restart.\n";
+    }
 }
 
 void sencCb(const Middleware::RecordMetadata& rm, const Middleware::Error& err) {

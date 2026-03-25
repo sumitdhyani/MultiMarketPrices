@@ -11,6 +11,7 @@ using Timer                 = ULMTTools::Timer;
 using TaskScheduler         = ULMTTools::TaskScheduler;
 using Properties            = kafka::Properties;
 using KafkaProducer         = kafka::clients::producer::KafkaProducer;
+using SendOption            = KafkaProducer::SendOption;
 using ProducerRecord        = kafka::clients::producer::ProducerRecord;
 using KafkaConsumer         = kafka::clients::consumer::KafkaConsumer;
 using SizedBuffer           = kafka::ConstBuffer;
@@ -232,11 +233,10 @@ void initializeMiddleWare(const std::string& appId,
 
         auto msgType_copy = std::make_shared<std::string>(*msgType);
         auto key_copy = std::make_shared<std::string>(key);
-        auto payload_copy = std::make_shared<std::string>(payload);
         
         ProducerRecord record(topic,
             SizedBuffer(key_copy->c_str(), key_copy->length()),
-            SizedBuffer(payload_copy->c_str(), payload_copy->length()));
+            SizedBuffer(payload.c_str(), payload.length()));
 
         record.headers().emplace_back(*HeaderKey::message_type(), Header::Value{msgType_copy->c_str(), msgType_copy->length()});
         std::vector<std::shared_ptr<std::string>> headerValueCopies; // To ensure the lifetime of header values
@@ -252,14 +252,14 @@ void initializeMiddleWare(const std::string& appId,
             kafkaWorker,
             msgType_copy,
             key_copy,
-            payload_copy,
             headerValueCopies = std::move(headerValueCopies)]
             (const RecordMetadata& metadata, const Error& error) {
                 if (!sendCallback) return;
                 kafkaWorker->push([sendCallback, metadata, error]() {
                     sendCallback(metadata, error);
                 });
-            }
+            },
+            SendOption::ToCopyRecordValue
         );
 
         return APIError::Ok;
@@ -298,7 +298,8 @@ void initializeMiddleWare(const std::string& appId,
                 kafkaWorker->push([sendCallback, metadata, error]() {
                     sendCallback(metadata, error);
                 });
-            }
+            },
+            SendOption::ToCopyRecordValue
         );
 
         return APIError::Ok;
@@ -340,7 +341,6 @@ void initializeMiddleWare(const std::string& appId,
 
     ConsumerFunc groupConsumerFunc = getSubsciptionFunc(groupConsumer);
     ConsumerFunc individualConsumerFunc = getSubsciptionFunc(individualConsumer);
-
 
     std::thread gcThread([groupConsumer, kafkaWorker, msgCallback]() {
         consumptionThread(*groupConsumer, *kafkaWorker, msgCallback);

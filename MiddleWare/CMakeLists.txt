@@ -10,3 +10,5 @@ target_include_directories("${PROJECT_NAME}" PUBLIC
                             "${CMAKE_SOURCE_DIR}"
                             "${CMAKE_SOURCE_DIR}/ThirdParty/modern-cpp-kafka/include"
                             "${CMAKE_SOURCE_DIR}/ThirdParty/MTTools")
+
+target_link_libraries("${PROJECT_NAME}" rdkafka++ rdkafka)

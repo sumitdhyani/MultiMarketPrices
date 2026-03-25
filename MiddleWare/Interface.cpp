@@ -12,10 +12,8 @@
 using Worker                = ULMTTools::WorkerThread;
 using Timer                 = ULMTTools::Timer;
 using TaskScheduler         = ULMTTools::TaskScheduler;
-using Error                 = kafka::Error;
 using Properties            = kafka::Properties;
 using KafkaProducer         = kafka::clients::producer::KafkaProducer;
-using RecordMetadata        = kafka::clients::producer::RecordMetadata;
 using ProducerRecord        = kafka::clients::producer::ProducerRecord;
 using KafkaConsumer         = kafka::clients::consumer::KafkaConsumer;
 using SizedBuffer           = kafka::ConstBuffer;
@@ -73,13 +71,16 @@ void consumptionThread(KafkaConsumer& consumer,
 }
 
 
+void sendCallback(const Middleware::RecordMetadata& rm, const Middleware::Error& e)
+{
+}
 
 void Middleware::initializeMiddleWare(const std::string& appId,
     const std::string& appGroup,
     const DescriptionFunc& descriptionFunc,
     const HeartBeatGenFunc& heartBeatGenFunc,
     const uint32_t& heartbeatIntervalSec,
-    const std::shared_ptr<TaskScheduler>& taskScheduler,
+    const std::shared_ptr<ULMTTools::Timer>& timer,
     const std::shared_ptr<Worker>& kafkaWorker,
     const MsgCallback& msgCallback,
     const InitCallback& initCallback,
@@ -116,14 +117,17 @@ void Middleware::initializeMiddleWare(const std::string& appId,
     catch(const kafka::Error& e)
     {
         errCallback({e.value(), e.message()});
+        return;
     }
     catch(const std::exception& e)
     {
         errCallback({-1, e.what()});
+        return;
     }
     catch(...)
     {
         errCallback({-1, "Unknown error during middleware initialization"});
+        return;
     }
 
     ProducerFunc producerFunc =
@@ -132,7 +136,7 @@ void Middleware::initializeMiddleWare(const std::string& appId,
                const std::string&   key,
                const std::string&   payload,
                const KeyValuePairs& headers,
-               const ErrCallback&   errCallback)
+               const SendCallback&   sendCallback)
     {
         if (topic.empty())          return APIError::TopicEmpty;
         else if (msgType->empty())  return APIError::MsgTypeEmpty;
@@ -157,15 +161,16 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         }
         
         producer->send(record,
-            [errCallback,
+            [sendCallback,
              kafkaWorker,
              msgType_copy,
              key_copy,
              payload_copy,
              headerValueCopies = std::move(headerValueCopies)]
             (const RecordMetadata& metadata, const Error& error) {
-                kafkaWorker->push([errCallback, error]() {
-                    errCallback({error.value(), error.message()});
+                if (!sendCallback) return;
+                kafkaWorker->push([sendCallback, metadata, error]() {
+                    sendCallback(metadata, error);
                 });
             }
         );
@@ -181,7 +186,7 @@ void Middleware::initializeMiddleWare(const std::string& appId,
                const uint32_t&      payloadSize,   
                const LowLevelKeyValuePairs& headers,
                const std::vector<uint32_t>& headerSizes,
-               const ErrCallback&   errCallback)
+               const SendCallback&   sendCallback)
     {
         if (!topic)             return APIError::TopicEmpty;
         else if (!msgType)      return APIError::MsgTypeEmpty;
@@ -201,9 +206,10 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         }
         
         producer->send(record,
-            [errCallback, kafkaWorker](const RecordMetadata& metadata, const Error& error) {
-                kafkaWorker->push([errCallback, error]() {
-                    errCallback({error.value(), error.message()});
+            [sendCallback, kafkaWorker](const RecordMetadata& metadata, const Error& error) {
+                if (!sendCallback) return;
+                kafkaWorker->push([sendCallback, metadata, error]() {
+                    sendCallback(metadata, error);
                 });
             }
         );
@@ -257,14 +263,13 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         consumptionThread(*individualConsumer, *kafkaWorker, msgCallback);
     });
 
-    ULMTTools::Timer timer(taskScheduler);
-    timer.install([producerFunc, errCallback, appId]() {
+    timer->install([producerFunc, errCallback, appId]() {
         producerFunc(*Topic::heartbeats(),
                      MessageType::heartBeat(),
                      appId,
                      "", 
                      {},
-                     errCallback);
+                     sendCallback);
     }, std::chrono::seconds(heartbeatIntervalSec));
 
     initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc);

@@ -44,6 +44,12 @@ struct StringEnum : StringWrapper<Enum>
 
 struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
 {
+    static MessageType const& dummy_message()
+    { 
+        static MessageType instance{"dummy_message"};
+        return instance;
+    }
+
     static MessageType const& heartBeat()
     { 
         static MessageType instance{"heartBeat"};
@@ -190,6 +196,30 @@ struct Tags : StringEnum<MetaEnum::Tags, Tags>
         static Tags instance{"evt"};
         return instance;
     }
+
+    static Tags const& HeartBeatInterval()
+    { 
+        static Tags instance{"HeartBeatInterval"};
+        return instance;
+    }
+
+    static Tags const& HeartBeatTimeout()
+    { 
+        static Tags instance{"HeartBeatTimeout"};
+        return instance;
+    }
+
+    static Tags const& appId()
+    { 
+        static Tags instance{"appId"};
+        return instance;
+    }
+
+    static Tags const& appGroup()
+    { 
+        static Tags instance{"appGroup"};
+        return instance;
+    }
 };
 
 struct HeaderKey : StringEnum<MetaEnum::HeaderKey, HeaderKey>
@@ -257,6 +287,18 @@ struct Topic : StringEnum<MetaEnum::Topic, Topic>
     static Topic const& heartbeats()
     { 
         static Topic instance{"heartbeats"};
+        return instance;
+    }
+
+    static Topic const& prices()
+    { 
+        static Topic instance{"prices"};
+        return instance;
+    }
+
+    static Topic const& test_topic()
+    { 
+        static Topic instance{"test_topic"};
         return instance;
     }
 };

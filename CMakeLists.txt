@@ -24,3 +24,4 @@ set(GTEST_LIBS  "gtest${GTEST_LIB_SUFFIX}"
 
 set (LIBRDKAFKA_INCLUDE_DIR "$ENV{RDKAFKA_ROOT}/src")
 add_subdirectory(MiddleWare)
+add_subdirectory(DataTumper)

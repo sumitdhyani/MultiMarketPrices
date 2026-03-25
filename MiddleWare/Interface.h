@@ -9,12 +9,19 @@
 #include <stdint.h>
 #include <Timer.hpp>
 #include <WorkerThread.hpp>
+#include <kafka/Error.h>
+#include <kafka/KafkaProducer.h>
+#include <kafka/KafkaConsumer.h>
 #include "Constants.h"
+
 
 namespace Middleware
 {
+    using RecordMetadata            = kafka::clients::producer::RecordMetadata;
+    using Error                     = kafka::Error;
     using error                     = std::tuple<int, std::string>;
     using ErrCallback               = std::function<void(const error&)>;
+    using SendCallback              = std::function<void(const RecordMetadata&, const Error&)>;
     using KeyValuePairs             = std::unordered_map<HeaderKey,std::string>;
 
     using LowLevelKeyValuePairs     = std::vector<std::tuple<const char*,const char*>>;
@@ -24,7 +31,7 @@ namespace Middleware
                                                     const std::string&,   // Key
                                                     const std::string&,   // Message payload
                                                     const KeyValuePairs&, // Headers
-                                                    const ErrCallback&)>; // Sucess callback
+                                                    const SendCallback&)>; // Sucess callback
     
 
     // No memory management done 
@@ -35,7 +42,7 @@ namespace Middleware
                                                             const uint32_t&,      // Message payload size
                                                             const LowLevelKeyValuePairs&, // Headers
                                                             const std::vector<uint32_t>&, // Header Sizes
-                                                            const ErrCallback&)>; // Sucess callback
+                                                            const SendCallback&)>; // Sucess callback
 
     using DescriptionFunc   = std::function<std::string()>;
     using HeartBeatGenFunc  = DescriptionFunc;
@@ -65,7 +72,7 @@ namespace Middleware
                             const DescriptionFunc& descriptionFunc,
                             const HeartBeatGenFunc& heartBeatGenFunc,
                             const uint32_t& heartbeatIntervalSec,
-                            const std::shared_ptr<ULMTTools::TaskScheduler>& taskScheduler,
+                            const std::shared_ptr<ULMTTools::Timer>& timer,
                             const std::shared_ptr<ULMTTools::WorkerThread>& workerThread,
                             const MsgCallback& msgCallback,
                             const InitCallback& initCallback,

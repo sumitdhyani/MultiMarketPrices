@@ -10,3 +10,6 @@
 [submodule "build/ThirdParty/CommonUtils"]
 	path = build/ThirdParty/CommonUtils
 	url = https://github.com/sumitdhyani/CommonUtils.git
+[submodule "ThirdParty/CommonUtils"]
+	path = ThirdParty/CommonUtils
+	url = https://github.com/sumitdhyani/CommonUtils.git

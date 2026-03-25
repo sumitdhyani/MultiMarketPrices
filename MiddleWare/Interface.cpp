@@ -28,8 +28,9 @@ using TopicPartitions       = kafka::TopicPartitions;
 
 void consumptionThread(KafkaConsumer& consumer,
                        Worker& worker,
-                       const MsgCallback& msgCallback)
+                       const Middleware::MsgCallback& msgCallback)
 {
+    using namespace Middleware;
     while(true)
     {
         auto records = consumer.poll(std::chrono::milliseconds(100));
@@ -68,16 +69,16 @@ void consumptionThread(KafkaConsumer& consumer,
         }
     }
 }
-void initializeMiddleWare(const std::string& appId,
-                          const std::string& appGroup,
-                          const DescriptionFunc& descriptionFunc,
-                          const MsgCallback& msgCallback,
-                          const InitCallback& initCallback,
-                          const ErrCallback& errCallback,
-                          const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
-                          const std::unordered_map<MiddlewareConfig, std::string>& consumerProps)
+
+void Middleware::initializeMiddleWare(const std::string& appId,
+    const std::string& appGroup,
+    const DescriptionFunc& descriptionFunc,
+    const MsgCallback& msgCallback,
+    const InitCallback& initCallback,
+    const ErrCallback& errCallback,
+    const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
+    const std::unordered_map<MiddlewareConfig, std::string>& consumerProps)
 {
-    
     std::shared_ptr<KafkaProducer> producer;
     std::shared_ptr<KafkaConsumer> groupConsumer;
     std::shared_ptr<KafkaConsumer> individualConsumer;

@@ -23,9 +23,13 @@ using TopicPartition        = kafka::TopicPartition;
 // set<TopicPartition>
 using TopicPartitions       = kafka::TopicPartitions;
 
+
+namespace Middleware
+{
+
 void consumptionThread(KafkaConsumer& consumer,
-                       Worker& worker,
-                       const Middleware::MsgCallback& msgCallback)
+                    Worker& worker,
+                    const MsgCallback& msgCallback)
 {
     using namespace Middleware;
     while(true)
@@ -52,13 +56,13 @@ void consumptionThread(KafkaConsumer& consumer,
             }
 
             worker.push([topic=std::move(topic),
-                         partition,
-                         offset,
-                         msgType = std::move(msgType),
-                         key = std::move(key),
-                         headers = std::move(headers),
-                         value = std::move(value),
-                         msgCallback = msgCallback]()
+                        partition,
+                        offset,
+                        msgType = std::move(msgType),
+                        key = std::move(key),
+                        headers = std::move(headers),
+                        value = std::move(value),
+                        msgCallback = msgCallback]()
             {
                 msgCallback( topic, partition, offset, msgType, key, headers, value);
             });
@@ -68,36 +72,17 @@ void consumptionThread(KafkaConsumer& consumer,
 }
 
 
-void internalSendCallback(const Middleware::RecordMetadata& rm, const Middleware::Error& e)
+void internalSendCallback(const RecordMetadata& rm, const Error& e)
 {
 
 }
 
-void enrichProducerPropsWithErrorCb(Properties& props)
+void enrichProducerPropsWithErrorCb(Properties& props, ErrCallback errCallback)
 {
-    props.put("error_cb", [](const Middleware::Error& error) {
-        std::cerr << "[ERROR CALLBACK] Code: " << error.value() 
-                  << " | Message: " << error.message() 
-                  << " | Fatal: " << (error.isFatal() ? "YES" : "NO") 
-                  << std::endl;
-
-        // Connection related errors handle karo
-        if (error.value() == RD_KAFKA_RESP_ERR__TRANSPORT ||
-            error.value() == RD_KAFKA_RESP_ERR__ALL_BROKERS_DOWN ||
-            error.value() == RD_KAFKA_RESP_ERR_NETWORK_EXCEPTION) {
-            
-            std::cout << ">>> Broker Disconnected / Network issue detected! Reconnecting...\n";
-            // Yahan tum reconnection logic daal sakte ho
-            // ya alert bhej sakte ho (Prometheus, Slack, email etc.)
-        }
-
-        if (error.isFatal()) {
-            std::cerr << ">>> FATAL ERROR! Application should probably shutdown/restart.\n";
-        }
-    });
+    props.put("error_cb", errCallback);
 }
 
-void Middleware::initializeMiddleWare(const std::string& appId,
+bool validateInitParams(const std::string& appId,
     const std::string& appGroup,
     const DescriptionFunc& descriptionFunc,
     const HeartBeatGenFunc& heartBeatGenFunc,
@@ -110,6 +95,82 @@ void Middleware::initializeMiddleWare(const std::string& appId,
     const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
     const std::unordered_map<MiddlewareConfig, std::string>& consumerProps)
 {
+    if(appId.empty())
+    {
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "AppId is empty");
+        errCallback(error);
+        return false;
+    }
+    else if (appGroup.empty())
+    {
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "AppGroup is empty");
+        errCallback(error);
+        return false;
+    }
+    else if(!descriptionFunc)
+    {
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Description function is null");
+        errCallback(error);
+        return false;
+    }
+    else if(!heartBeatGenFunc)
+    {
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "HeartBeatGen function is null");
+        errCallback(error);
+        return false;
+    }
+    else if(heartbeatIntervalSec == 0)
+    {
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Heartbeat interval cannot be zero");
+        errCallback(error);
+        return false;
+    }
+    else if (!timer)
+    {
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Timer is null");
+        errCallback(error);
+        return false;
+    }
+    else if (!kafkaWorker)
+    {
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Worker thread is null");
+        errCallback(error);
+        return false;
+    }
+    else if (!msgCallback)
+    {
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Message callback is null");
+        errCallback(error);
+        return false;
+    }
+    else if (!initCallback)
+    {
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Initialization callback is null");
+        errCallback(error);
+        return false;
+    }
+
+    return true;
+}
+
+void initializeMiddleWare(const std::string& appId,
+    const std::string& appGroup,
+    const DescriptionFunc& descriptionFunc,
+    const HeartBeatGenFunc& heartBeatGenFunc,
+    const uint32_t& heartbeatIntervalSec,
+    const std::shared_ptr<ULMTTools::Timer>& timer,
+    const std::shared_ptr<Worker>& kafkaWorker,
+    const MsgCallback& msgCallback,
+    const InitCallback& initCallback,
+    const ErrCallback& errCallback,
+    const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
+    const std::unordered_map<MiddlewareConfig, std::string>& consumerProps)
+{
+    if (!validateInitParams(appId, appGroup, descriptionFunc, heartBeatGenFunc, heartbeatIntervalSec, timer, kafkaWorker, msgCallback, initCallback, errCallback, producerProps, consumerProps))
+    {
+        return;
+    }
+
     std::shared_ptr<KafkaProducer> producer;
     std::shared_ptr<KafkaConsumer> groupConsumer;
     std::shared_ptr<KafkaConsumer> individualConsumer;
@@ -121,49 +182,49 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         {
             kafkaProducerProps.put(*key, value);
         }
-        enrichProducerPropsWithErrorCb(kafkaProducerProps);
-        producer = std::make_shared<KafkaProducer>(kafkaProducerProps);
+        enrichProducerPropsWithErrorCb(kafkaProducerProps, errCallback);
+        auto producer = std::make_shared<KafkaProducer>(kafkaProducerProps);
 
         Properties kafkaConsumerProps;
         for (auto const& [key, value] : consumerProps)
         {
             kafkaConsumerProps.put(*key, value);    
         }
-        enrichProducerPropsWithErrorCb(kafkaConsumerProps);
+        enrichProducerPropsWithErrorCb(kafkaConsumerProps, errCallback);
 
         kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appGroup);
-        groupConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
+        auto groupConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
 
         kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appId);
-        individualConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
+        auto individualConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
     }
-    catch(const Middleware::Error& e)
+    catch(const Error& e)
     {
         errCallback(e);
         return;
     }
     catch(const std::exception& e)
     {
-        //Middleware::Error error(RD_KAFKA_RESP_ERR_UNKNOWN, e.what());
-        Middleware::Error error(RD_KAFKA_RESP_ERR_UNKNOWN);
+        //Error error(RD_KAFKA_RESP_ERR_UNKNOWN, e.what());
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN);
         errCallback(error);
         return;
     }
     catch(...)
     {
-        //Middleware::Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unknown error during middleware initialization");
-        Middleware::Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unknown error during middleware initialization");
+        //Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unknown error during middleware initialization");
+        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unknown error during middleware initialization");
         errCallback(error);
         return;
     }
 
     ProducerFunc producerFunc =
     [producer, kafkaWorker](const std::string&   topic,
-               const MessageType&   msgType,
-               const std::string&   key,
-               const std::string&   payload,
-               const KeyValuePairs& headers,
-               const SendCallback&   sendCallback)
+            const MessageType&   msgType,
+            const std::string&   key,
+            const std::string&   payload,
+            const KeyValuePairs& headers,
+            const SendCallback&   sendCallback)
     {
         if (topic.empty())          return APIError::TopicEmpty;
         else if (msgType->empty())  return APIError::MsgTypeEmpty;
@@ -189,11 +250,11 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         
         producer->send(record,
             [sendCallback,
-             kafkaWorker,
-             msgType_copy,
-             key_copy,
-             payload_copy,
-             headerValueCopies = std::move(headerValueCopies)]
+            kafkaWorker,
+            msgType_copy,
+            key_copy,
+            payload_copy,
+            headerValueCopies = std::move(headerValueCopies)]
             (const RecordMetadata& metadata, const Error& error) {
                 if (!sendCallback) return;
                 kafkaWorker->push([sendCallback, metadata, error]() {
@@ -207,13 +268,13 @@ void Middleware::initializeMiddleWare(const std::string& appId,
 
     LowLevelProducerFunc lowLevelProducerFunc =
     [producer, kafkaWorker](const char*   topic,
-               const char*   msgType,
-               const char*   key,
-               const char*   payload,
-               const uint32_t&      payloadSize,   
-               const LowLevelKeyValuePairs& headers,
-               const std::vector<uint32_t>& headerSizes,
-               const SendCallback&   sendCallback)
+            const char*   msgType,
+            const char*   key,
+            const char*   payload,
+            const uint32_t&      payloadSize,   
+            const LowLevelKeyValuePairs& headers,
+            const std::vector<uint32_t>& headerSizes,
+            const SendCallback&   sendCallback)
     {
         if (!topic)             return APIError::TopicEmpty;
         else if (!msgType)      return APIError::MsgTypeEmpty;
@@ -292,12 +353,14 @@ void Middleware::initializeMiddleWare(const std::string& appId,
 
     timer->install([producerFunc, errCallback, appId]() {
         producerFunc(*Topic::heartbeats(),
-                     MessageType::heartBeat(),
-                     appId,
-                     "", 
-                     {},
-                     internalSendCallback);
+                    MessageType::heartBeat(),
+                    appId,
+                    "", 
+                    {},
+                    internalSendCallback);
     }, std::chrono::seconds(heartbeatIntervalSec));
 
     initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc);
+}
+
 }

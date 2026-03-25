@@ -6,10 +6,13 @@
 #include <kafka/KafkaProducer.h>
 #include <kafka/KafkaConsumer.h>
 #include <WorkerThread.hpp>
+#include <Timer.hpp>
 
 
 // 3rd party library utils
 using Worker                = ULMTTools::WorkerThread;
+using Timer                 = ULMTTools::Timer;
+using TaskScheduler         = ULMTTools::TaskScheduler;
 using Error                 = kafka::Error;
 using Properties            = kafka::Properties;
 using KafkaProducer         = kafka::clients::producer::KafkaProducer;
@@ -118,8 +121,10 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         errCallback({-1, "Unknown error during middleware initialization"});
     }
 
+    auto kafkaWorker = std::make_shared<Worker>();
+
     ProducerFunc producerFunc =
-    [producer](const std::string&   topic,
+    [producer, kafkaWorker](const std::string&   topic,
                const MessageType&   msgType,
                const std::string&   key,
                const std::string&   payload,
@@ -142,8 +147,10 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         }
         
         producer->send(record,
-            [errCallback](const RecordMetadata& metadata, const Error& error) {
-                errCallback({error.value(), error.message()});
+            [errCallback, kafkaWorker](const RecordMetadata& metadata, const Error& error) {
+                kafkaWorker->push([errCallback, error]() {
+                    errCallback({error.value(), error.message()});
+                });
             }
         );
 
@@ -187,17 +194,25 @@ void Middleware::initializeMiddleWare(const std::string& appId,
     ConsumerFunc groupConsumerFunc = getSubsciptionFunc(groupConsumer);
     ConsumerFunc individualConsumerFunc = getSubsciptionFunc(individualConsumer);
 
-    initCallback(producerFunc, groupConsumerFunc, individualConsumerFunc);
 
-    auto consumptionWorker = std::make_shared<Worker>();
-
-    std::thread gcThread([groupConsumer, consumptionWorker, msgCallback]() {
-        consumptionThread(*groupConsumer, *consumptionWorker, msgCallback);
+    std::thread gcThread([groupConsumer, kafkaWorker, msgCallback]() {
+        consumptionThread(*groupConsumer, *kafkaWorker, msgCallback);
     });
         
-    std::thread icThread([individualConsumer, consumptionWorker, msgCallback]() {
-        consumptionThread(*individualConsumer, *consumptionWorker, msgCallback);
+    std::thread icThread([individualConsumer, kafkaWorker, msgCallback]() {
+        consumptionThread(*individualConsumer, *kafkaWorker, msgCallback);
     });
 
+    ULMTTools::Timer timer(std::make_shared<ULMTTools::TaskScheduler>());
+    timer.install([producerFunc, errCallback, appId]() {
+        producerFunc(*Topic::heartbeats(),
+                     MessageType::heartBeat(),
+                     appId,
+                     "", 
+                     {},
+                     errCallback);
+    }, std::chrono::seconds(30));
+
+    initCallback(producerFunc, groupConsumerFunc, individualConsumerFunc);
 
 }

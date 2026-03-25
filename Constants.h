@@ -9,7 +9,8 @@ enum class MetaEnum
     Tags,
     HeaderKey,
     TagValues,
-    MiddlewareConfig
+    MiddlewareConfig,
+    Topic
 };
 
 template<MetaEnum Enum>
@@ -40,8 +41,6 @@ struct StringEnum : StringWrapper<Enum>
         StringWrapper<Enum>(str)
     {}
 };
-
-
 
 struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
 {
@@ -253,6 +252,14 @@ struct MiddlewareConfig : StringEnum<MetaEnum::MiddlewareConfig, MiddlewareConfi
     }
 };
 
+struct Topic : StringEnum<MetaEnum::Topic, Topic>
+{
+    static Topic const& heartbeats()
+    { 
+        static Topic instance{"heartbeats"};
+        return instance;
+    }
+};
 
 namespace std {
     template<>
@@ -292,63 +299,3 @@ enum class APIError
     KeyEmpty,
     PayloadEmpty
 };
-
-// enum class HeaderKeys
-// {
-//     message_type,
-//     reqId,
-// };
-
-
-// std::string to_string(const MessageType& msgType )
-// {
-//     switch (msgType)
-//     {
-//     case MessageType::subscribe:
-//         return "subscribe";
-//     case MessageType::unsubscribe:
-//         return "unsubscribe";
-//     case MessageType::virtual_depth_update:
-//         return "virtual_depth_update";
-//     case MessageType::depth_update:
-//         return "depth_update";
-//     case MessageType::trade_update:
-//         return "trade_update";
-//     case MessageType::request:
-//         return "request";
-//     case MessageType::response:
-//         return "response";
-//     case MessageType::last_response:
-//         return "last_response";
-//     case MessageType::web_server_update:
-//         return "web_server_update";
-//     case MessageType::sync_data_request:
-//         return "sync_data_request";
-//     case MessageType::sync_data_update:
-//         return "sync_data_update";
-//     case MessageType::sync_data:
-//         return "sync_data";
-//     case MessageType::app_down:
-//         return "app_down";
-//     case MessageType::app_up:
-//         return "app_up";
-//     case MessageType::component_subscription_update:
-//         return "component_subscription_update";
-//     case MessageType::admin_query:
-//         return "admin_query";
-//     case MessageType::admin_query_response:
-//         return "admin_query_response";
-//     case MessageType::registration:
-//         return "registration";
-//     case MessageType::heartBeat:
-//         return "heartBeat";
-//     case MessageType::component_enquiry:
-//         return "component_enquiry";
-//     case MessageType::component_subscription:
-//         return "component_subscription";
-//     case MessageType::component_enquiry_response:
-//         return "component_enquiry_response";
-//     case MessageType::dummy_message:
-//         return "dummy_message";
-//     }
-// }

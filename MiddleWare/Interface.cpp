@@ -1,12 +1,10 @@
-#include "Interface.h"
 #include <memory>
 #include <thread>
 #include <chrono>
 #include <kafka/Error.h>
 #include <kafka/KafkaProducer.h>
 #include <kafka/KafkaConsumer.h>
-#include <WorkerThread.hpp>
-#include <Timer.hpp>
+#include "Interface.h"
 
 
 // 3rd party library utils
@@ -76,6 +74,10 @@ void consumptionThread(KafkaConsumer& consumer,
 void Middleware::initializeMiddleWare(const std::string& appId,
     const std::string& appGroup,
     const DescriptionFunc& descriptionFunc,
+    const HeartBeatGenFunc& heartBeatGenFunc,
+    const uint32_t& heartbeatIntervalSec,
+    const std::shared_ptr<TaskScheduler>& taskScheduler,
+    const std::shared_ptr<Worker>& kafkaWorker,
     const MsgCallback& msgCallback,
     const InitCallback& initCallback,
     const ErrCallback& errCallback,
@@ -91,7 +93,7 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         Properties kafkaProducerProps;
         for (auto const& [key, value] : producerProps)
         {
-            kafkaProducerProps.put(*key, value);    
+            kafkaProducerProps.put(*key, value);
         }
 
         producer = std::make_shared<KafkaProducer>(kafkaProducerProps);
@@ -121,8 +123,6 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         errCallback({-1, "Unknown error during middleware initialization"});
     }
 
-    auto kafkaWorker = std::make_shared<Worker>();
-
     ProducerFunc producerFunc =
     [producer, kafkaWorker](const std::string&   topic,
                const MessageType&   msgType,
@@ -132,7 +132,7 @@ void Middleware::initializeMiddleWare(const std::string& appId,
                const ErrCallback&   errCallback)
     {
         if (topic.empty())          return APIError::TopicEmpty;
-        else if (msgType->empty())   return APIError::MsgTypeEmpty;
+        else if (msgType->empty())  return APIError::MsgTypeEmpty;
         else if (key.empty())       return APIError::KeyEmpty;
         else if (payload.empty())   return APIError::PayloadEmpty;
 
@@ -203,7 +203,7 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         consumptionThread(*individualConsumer, *kafkaWorker, msgCallback);
     });
 
-    ULMTTools::Timer timer(std::make_shared<ULMTTools::TaskScheduler>());
+    ULMTTools::Timer timer(taskScheduler);
     timer.install([producerFunc, errCallback, appId]() {
         producerFunc(*Topic::heartbeats(),
                      MessageType::heartBeat(),
@@ -211,8 +211,7 @@ void Middleware::initializeMiddleWare(const std::string& appId,
                      "", 
                      {},
                      errCallback);
-    }, std::chrono::seconds(30));
+    }, std::chrono::seconds(heartbeatIntervalSec));
 
     initCallback(producerFunc, groupConsumerFunc, individualConsumerFunc);
-
 }

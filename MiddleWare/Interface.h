@@ -7,6 +7,8 @@
 #include <exception>
 #include <optional>
 #include <stdint.h>
+#include <Timer.hpp>
+#include <WorkerThread.hpp>
 #include "Constants.h"
 
 namespace Middleware
@@ -22,7 +24,8 @@ namespace Middleware
                                                     const KeyValuePairs&, // Headers
                                                     const ErrCallback&)>; // Sucess callback
 
-    using DescriptionFunc = std::function<std::string()>;
+    using DescriptionFunc   = std::function<std::string()>;
+    using HeartBeatGenFunc  = DescriptionFunc;
 
     using MsgCallback = std::function<void (const std::string&,     // Topic
                                             const int32_t&,         // Patition
@@ -46,6 +49,10 @@ namespace Middleware
     void initializeMiddleWare(const std::string& appId,
                             const std::string& appType,
                             const DescriptionFunc& descriptionFunc,
+                            const HeartBeatGenFunc& heartBeatGenFunc,
+                            const uint32_t& heartbeatIntervalSec,
+                            const std::shared_ptr<ULMTTools::TaskScheduler>& taskScheduler,
+                            const std::shared_ptr<ULMTTools::WorkerThread>& workerThread,
                             const MsgCallback& msgCallback,
                             const InitCallback& initCallback,
                             const ErrCallback& errCallback,

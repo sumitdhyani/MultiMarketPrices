@@ -2,9 +2,6 @@
 #include <string.h>
 #include <thread>
 #include <chrono>
-#include <kafka/Error.h>
-#include <kafka/KafkaProducer.h>
-#include <kafka/KafkaConsumer.h>
 #include "Interface.h"
 
 
@@ -108,10 +105,10 @@ void Middleware::initializeMiddleWare(const std::string& appId,
             kafkaConsumerProps.put(*key, value);    
         }
 
-        kafkaConsumerProps.put(MiddlewareConfig::group_id().operator*(), appGroup);
+        kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appGroup);
         groupConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
 
-        kafkaConsumerProps.put(MiddlewareConfig::group_id().operator*(), appId);
+        kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appId);
         individualConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
     }
     catch(const kafka::Error& e)

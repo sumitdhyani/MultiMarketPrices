@@ -1,4 +1,5 @@
 #include <memory>
+#include <string.h>
 #include <thread>
 #include <chrono>
 #include <kafka/Error.h>
@@ -71,6 +72,8 @@ void consumptionThread(KafkaConsumer& consumer,
     }
 }
 
+
+
 void Middleware::initializeMiddleWare(const std::string& appId,
     const std::string& appGroup,
     const DescriptionFunc& descriptionFunc,
@@ -136,14 +139,65 @@ void Middleware::initializeMiddleWare(const std::string& appId,
         else if (key.empty())       return APIError::KeyEmpty;
         else if (payload.empty())   return APIError::PayloadEmpty;
 
+        auto msgType_copy = std::make_shared<std::string>(*msgType);
+        auto key_copy = std::make_shared<std::string>(key);
+        auto payload_copy = std::make_shared<std::string>(payload);
+        
         ProducerRecord record(topic,
-            SizedBuffer(key.c_str(), key.length()),
-            SizedBuffer(payload.c_str(), payload.length()));
+            SizedBuffer(key_copy->c_str(), key_copy->length()),
+            SizedBuffer(payload_copy->c_str(), payload_copy->length()));
 
-        record.headers().emplace_back(*HeaderKey::message_type(), Header::Value{msgType->c_str(), msgType->length()});
+        record.headers().emplace_back(*HeaderKey::message_type(), Header::Value{msgType_copy->c_str(), msgType_copy->length()});
+        std::vector<std::shared_ptr<std::string>> headerValueCopies; // To ensure the lifetime of header values
         for (const auto& [headerKey, headerValue] : headers)
         {
-            record.headers().emplace_back(*headerKey, Header::Value{headerValue.c_str(), headerValue.length()});
+            auto headerValueCopy = std::make_shared<std::string>(headerValue);
+            headerValueCopies.push_back(headerValueCopy);
+            record.headers().emplace_back(*headerKey, Header::Value{headerValueCopy->c_str(), headerValueCopy->length()});
+        }
+        
+        producer->send(record,
+            [errCallback,
+             kafkaWorker,
+             msgType_copy,
+             key_copy,
+             payload_copy,
+             headerValueCopies = std::move(headerValueCopies)]
+            (const RecordMetadata& metadata, const Error& error) {
+                kafkaWorker->push([errCallback, error]() {
+                    errCallback({error.value(), error.message()});
+                });
+            }
+        );
+
+        return APIError::Ok;
+    };
+
+    LowLevelProducerFunc lowLevelProducerFunc =
+    [producer, kafkaWorker](const char*   topic,
+               const char*   msgType,
+               const char*   key,
+               const char*   payload,
+               const uint32_t&      payloadSize,   
+               const LowLevelKeyValuePairs& headers,
+               const std::vector<uint32_t>& headerSizes,
+               const ErrCallback&   errCallback)
+    {
+        if (!topic)             return APIError::TopicEmpty;
+        else if (!msgType)      return APIError::MsgTypeEmpty;
+        else if (!key)          return APIError::KeyEmpty;
+        else if (!payload)      return APIError::PayloadEmpty;
+
+        
+        ProducerRecord record(topic,
+            SizedBuffer(key, strlen(key)),
+            SizedBuffer(payload, payloadSize));
+
+        record.headers().emplace_back(*HeaderKey::message_type(), Header::Value{msgType, strlen(msgType)});
+        for (size_t i = 0; i < headers.size(); ++i)
+        {
+            const auto& [headerKey, headerValue] = headers[i];
+            record.headers().emplace_back(headerKey, Header::Value{headerValue, headerSizes[i]});
         }
         
         producer->send(record,
@@ -213,5 +267,5 @@ void Middleware::initializeMiddleWare(const std::string& appId,
                      errCallback);
     }, std::chrono::seconds(heartbeatIntervalSec));
 
-    initCallback(producerFunc, groupConsumerFunc, individualConsumerFunc);
+    initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc);
 }

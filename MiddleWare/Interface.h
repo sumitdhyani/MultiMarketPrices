@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <vector>
 #include <exception>
-#include <optional>
+#include <tuple>
 #include <stdint.h>
 #include <Timer.hpp>
 #include <WorkerThread.hpp>
@@ -13,16 +13,29 @@
 
 namespace Middleware
 {
-    using error             = std::tuple<int, std::string>;
-    using ErrCallback       = std::function<void(const error&)>;
-    using KeyValuePairs     = std::unordered_map<HeaderKey,std::string>;
+    using error                     = std::tuple<int, std::string>;
+    using ErrCallback               = std::function<void(const error&)>;
+    using KeyValuePairs             = std::unordered_map<HeaderKey,std::string>;
 
-    using ProducerFunc      = std::function<APIError (const std::string&,   // Topic
+    using LowLevelKeyValuePairs     = std::vector<std::tuple<const char*,const char*>>;
+
+    using ProducerFunc              = std::function<APIError (const std::string&,   // Topic
                                                     const MessageType&,   // MessageType
                                                     const std::string&,   // Key
                                                     const std::string&,   // Message payload
                                                     const KeyValuePairs&, // Headers
                                                     const ErrCallback&)>; // Sucess callback
+    
+
+    // No memory management done 
+    using LowLevelProducerFunc     = std::function<APIError (const char*,   // Topic
+                                                            const char*,   // MessageType
+                                                            const char*,   // Key
+                                                            const char*,   // Message payload
+                                                            const uint32_t&,      // Message payload size
+                                                            const LowLevelKeyValuePairs&, // Headers
+                                                            const std::vector<uint32_t>&, // Header Sizes
+                                                            const ErrCallback&)>; // Sucess callback
 
     using DescriptionFunc   = std::function<std::string()>;
     using HeartBeatGenFunc  = DescriptionFunc;
@@ -43,6 +56,7 @@ namespace Middleware
                                                 const RebalanceCallback& rebalanceCallback)>;
 
     using InitCallback = std::function<void(const ProducerFunc&,
+                                            const LowLevelProducerFunc&,
                                             const ConsumerFunc&,    // To subscribe as group
                                             const ConsumerFunc&)>;  // To subscribe as individual
 

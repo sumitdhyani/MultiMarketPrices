@@ -21,21 +21,18 @@ struct StringEnum : StringWrapper<Enum>
 {
     friend SubClass;
     using StringWrapper<Enum>::StringWrapper;
+
     StringEnum(const StringEnum& other) :
         StringWrapper<Enum>(static_cast<const StringWrapper<Enum>&>(other))    
     {}
+    
     StringEnum(StringEnum&& other) :
         StringWrapper<Enum>(static_cast<StringWrapper<Enum>&&>(other))    
     {}
 
-    std::size_t operator()() const
+    bool operator==(const StringEnum& other) const
     {
-        return std::hash<std::string>{}(this->operator*());
-    }
-
-    int operator<=>(const StringEnum& other) const
-    {
-        return this->operator*().compare(other.operator*());
+        return this->operator*() == other.operator*();
     }
 
     private:
@@ -43,6 +40,8 @@ struct StringEnum : StringWrapper<Enum>
         StringWrapper<Enum>(str)
     {}
 };
+
+
 
 struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
 {
@@ -254,11 +253,45 @@ struct MiddlewareConfig : StringEnum<MetaEnum::MiddlewareConfig, MiddlewareConfi
     }
 };
 
-// enum class Tags
-// {
-//     message_type,
-//     evt
-// };
+
+namespace std {
+    template<>
+    struct hash<HeaderKey> {
+        std::size_t operator()(const HeaderKey& k) const noexcept {
+           return std::hash<std::string>{}(*k);
+        }
+    };
+
+    template<>
+    struct hash<MiddlewareConfig> {
+        std::size_t operator()(const MiddlewareConfig& k) const noexcept {
+           return std::hash<std::string>{}(*k);
+        }
+    };
+
+    // template<MetaEnum Enum, class SubClass>
+    // struct hash<StringEnum<Enum, SubClass>> {
+    //     std::size_t operator()(const StringEnum<Enum, SubClass>& k) const noexcept {
+    //        return std::hash<std::string>{}(*k);
+    //     }
+    // };
+
+}
+
+enum class TopicAssignmentEvent
+{
+    PartitionAssigned,
+    PartitionRevoked
+};
+
+enum class APIError
+{
+    Ok,
+    TopicEmpty,
+    MsgTypeEmpty,
+    KeyEmpty,
+    PayloadEmpty
+};
 
 // enum class HeaderKeys
 // {

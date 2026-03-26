@@ -45,20 +45,32 @@ fail(beast::error_code ec, char const* what)
 // Sends a WebSocket message and prints the response
 class session : public std::enable_shared_from_this<session>
 {
+    using PriceCallback = std::function<void(const std::string&, const std::string&)>; 
     tcp::resolver m_resolver;
     websocket::stream<
     beast::ssl_stream<beast::tcp_stream>> m_ws;
     beast::flat_buffer m_buffer;
     std::string m_host;
     std::string m_path;
+    const PriceCallback m_tradeCallback;
+    const PriceCallback m_depthCallback;
 
 public:
     // Resolver and socket require an io_context
     explicit
-    session(net::io_context& ioc, ssl::context& ctx)
+    session(net::io_context& ioc, 
+            ssl::context& ctx,
+            const PriceCallback& tradeCallback,
+            const PriceCallback& depthCallback)
         : m_resolver(net::make_strand(ioc))
         , m_ws(net::make_strand(ioc), ctx)
+        , m_tradeCallback(tradeCallback)
+        , m_depthCallback(depthCallback)
     {
+    }
+
+    void subscribeTrade(const std::string& pair) {
+        
     }
 
     // Start the asynchronous operation
@@ -239,18 +251,18 @@ public:
 int main(int argc, char** argv)
 {
     // Check command line arguments.
-    if(argc != 4)
-    {
-        std::cerr <<
-            "Usage: websocket-client-async-ssl <host> <port> <text>\n" <<
-            "Example:\n" <<
-            "    websocket-client-async-ssl echo.websocket.org 443 \"Hello, world!\"\n";
-        return EXIT_FAILURE;
-    }
+    // if(argc != 4)
+    // {
+    //     std::cerr <<
+    //         "Usage: websocket-client-async-ssl <host> <port> <text>\n" <<
+    //         "Example:\n" <<
+    //         "    websocket-client-async-ssl echo.websocket.org 443 \"Hello, world!\"\n";
+    //     return EXIT_FAILURE;
+    // }
 
-    char const* host = argv[1];
-    char const* port = argv[2];
-    auto const path = argv[3];
+    char const* host = "stream.binance.com";
+    char const* port = "9443";
+    auto const path = "/stream";
 
     // The io_context is required for all I/O
     net::io_context ioc;
@@ -262,7 +274,14 @@ int main(int argc, char** argv)
     //load_root_certificates(ctx);
 
     // Launch the asynchronous operation
-    std::make_shared<session>(ioc, ctx)->run(host, port, path);
+    std::make_shared<session>(ioc,
+        ctx, 
+        [](const std::string& symbol, const std::string& price) {
+            std::cout << "Trade: " << symbol << " - " << price << std::endl;
+        },
+        [](const std::string& symbol, const std::string& depth) {
+            std::cout << "Depth: " << symbol << " - " << depth << std::endl;
+        })->run(host, port, path);
 
     // Run the I/O service. The call will return when
     // the socket is closed.

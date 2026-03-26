@@ -1,3 +1,4 @@
+cmake_minimum_required(VERSION 3.5.0)
 project(MultiMarketPrices)
 
 if(NOT CMAKE_BUILD_TYPE )

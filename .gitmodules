@@ -10,3 +10,6 @@
 [submodule "ThirdParty/MTTools"]
 	path = ThirdParty/MTTools
 	url = https://github.com/sumitdhyani/MTTools.git
+[submodule "MDGateways/Binance/binapi"]
+	path = MDGateways/Binance/binapi
+	url = https://github.com/niXman/binapi.git

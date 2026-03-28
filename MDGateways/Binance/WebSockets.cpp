@@ -28,6 +28,7 @@
 #include <queue>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <string>
 
 namespace beast = boost::beast;         // from <boost/beast.hpp>
@@ -41,33 +42,34 @@ using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 
 class session;
 
-// Report a failure
-void fail(beast::error_code ec,
-          char const* what,
-          std::shared_ptr<session> sess,
-          std::chrono::seconds retryDelay);
-
 // Sends a WebSocket message and prints the response
 class session : public std::enable_shared_from_this<session>
 {
-    using PriceCallback = std::function<void(const std::string&, const std::string&)>; 
+    using PriceCallback = std::function<void(const std::string&)>; 
+    // error, fatal(true means that the connection will not be recovered)
+    using ErrCallback = std::function<void(const beast::error_code&, bool)>;
+    using ReadyCallback = std::function<void()>;
+
     tcp::resolver m_resolver;
     websocket::stream<
     beast::ssl_stream<beast::tcp_stream>> m_ws;
     beast::flat_buffer m_buffer;
-    std::string m_host;
-    std::string m_port;
-    std::string m_path;
-    const PriceCallback m_tradeCallback;
-    const PriceCallback m_depthCallback;
+    const std::string m_host;
+    const std::string m_port;
+    const std::string m_path;
+    const PriceCallback m_priceCallback;
+    const ErrCallback m_errCallback;
+    const ReadyCallback m_readyCallback;
     std::queue<std::string> m_commandQueue;
     bool m_inFlight;
     int m_msgNo;
+    const uint32_t m_retryDelay_sec;
+    std::set<std::string> m_depthSubscriptions;
+    std::set<std::string> m_tradeSubscriptions;
 
     void on_resolve(beast::error_code ec, tcp::resolver::results_type results)
     {
-        if(ec)
-            return fail(ec, "resolve", shared_from_this(), std::chrono::seconds(5));
+        if(ec) return fail(ec, "resolve");
 
         // Set a timeout on the operation
         beast::get_lowest_layer(m_ws).expires_after(std::chrono::seconds(60));
@@ -83,13 +85,12 @@ class session : public std::enable_shared_from_this<session>
 
     void on_connect(beast::error_code ec, tcp::resolver::results_type::endpoint_type ep)
     {
-        if(ec)
-            return fail(ec, "connect", shared_from_this(), std::chrono::seconds(5));
+        if(ec) return fail(ec, "connect");
 
         // Update the host_ string. This will provide the value of the
         // Host HTTP header during the WebSocket handshake.
         // See https://tools.ietf.org/html/rfc7230#section-5.4
-        m_host += ':' + std::to_string(ep.port());
+        std::string m_hostPort = m_host + ':' + std::to_string(ep.port());
 
         // Set a timeout on the operation
         beast::get_lowest_layer(m_ws).expires_after(std::chrono::seconds(30));
@@ -97,11 +98,11 @@ class session : public std::enable_shared_from_this<session>
         // Set SNI Hostname (many hosts need this to handshake successfully)
         if(! SSL_set_tlsext_host_name(
                 m_ws.next_layer().native_handle(),
-                m_host.c_str()))
+                m_hostPort.c_str()))
         {
             ec = beast::error_code(static_cast<int>(::ERR_get_error()),
                 net::error::get_ssl_category());
-            return fail(ec, "connect", shared_from_this(), std::chrono::seconds(5));
+            return fail(ec, "connect");
         }
 
         std::cout << "[Binance WS] on_connect" << std::endl;
@@ -113,11 +114,9 @@ class session : public std::enable_shared_from_this<session>
                 shared_from_this()));
     }
 
-    void
-    on_ssl_handshake(beast::error_code ec)
+    void on_ssl_handshake(beast::error_code ec)
     {
-        if(ec)
-            return fail(ec, "ssl_handshake", shared_from_this(), std::chrono::seconds(5));
+        if(ec) return fail(ec, "ssl_handshake");
 
         // Turn off the timeout on the tcp_stream, because
         // the websocket stream has its own timeout system.
@@ -145,12 +144,15 @@ class session : public std::enable_shared_from_this<session>
                 shared_from_this()));
     }
 
-    void
-    on_handshake(beast::error_code ec)
+    void on_handshake(beast::error_code ec)
     {
-        if(ec) return fail(ec, "handshake", shared_from_this(), std::chrono::seconds(5));
+        if(ec) return fail(ec, "handshake");
 
         std::cout << "[Binance WS] on_handshake" << std::endl;
+
+        for (auto const& symbol : m_tradeSubscriptions) subscribeTrade(symbol);
+        for (auto const& symbol : m_depthSubscriptions) subscribeDepth(symbol);
+        
         //subscribeDepth("btcusdt");
         subscribeTrade("btcusdt");
         read();
@@ -158,6 +160,8 @@ class session : public std::enable_shared_from_this<session>
 
     void read()
     {
+        beast::get_lowest_layer(m_ws).expires_after(std::chrono::seconds(hasSubscriptions()? 60 : 600));
+
         m_ws.async_read(m_buffer,
                         beast::bind_front_handler(&session::on_read, shared_from_this())
         );
@@ -165,8 +169,11 @@ class session : public std::enable_shared_from_this<session>
 
     void on_read(beast::error_code ec, size_t bytes_transferred)
     {
-        //boost::ignore_unused(bytes_transferred);
-        if(ec) return fail(ec, "read", shared_from_this(), std::chrono::seconds(5));
+        if(ec)
+        {
+            if (ec == beast::error::timeout) closeConnection();
+            return fail(ec, "read");
+        }
         
         std::string payload = beast::buffers_to_string(m_buffer.data());
         m_buffer.consume(bytes_transferred);
@@ -189,13 +196,23 @@ class session : public std::enable_shared_from_this<session>
         read();
     }
 
-    void on_write(beast::error_code ec,
-        std::size_t bytes_transferred)
+    void closeConnection()
+    {
+        if (m_ws.is_open())
+        {
+            beast::error_code ec;
+            m_ws.close(websocket::close_code::normal, ec);   // graceful close
+
+            // if graceful close fails, force close the connection
+            if (ec) beast::get_lowest_layer(m_ws).close();
+        }
+    }
+
+    void on_write(beast::error_code ec, std::size_t bytes_transferred)
     {
         boost::ignore_unused(bytes_transferred);
 
-        if(ec)
-            return fail(ec, "write", shared_from_this(), std::chrono::seconds(5));
+        if(ec) return fail(ec, "write");
         
         if (m_commandQueue.empty()) {
             m_inFlight = false;
@@ -214,48 +231,51 @@ class session : public std::enable_shared_from_this<session>
 
     void on_close(beast::error_code ec)
     {
-        if(ec)
-            return fail(ec, "close", shared_from_this(), std::chrono::seconds(5));
-
+        if(ec) return fail(ec, "close");
         // If we get here then the connection is closed gracefully
-
-        // The make_printable() function helps print a ConstBufferSequence
-        std::cout << beast::make_printable(m_buffer.data()) << std::endl;
     }
 
-    void fail(beast::error_code ec,
-        char const* what,
-        std::shared_ptr<session> sess,
-        std::chrono::seconds retryDelay)
+    void fail(beast::error_code ec, char const* what)
     {
         std::cerr << what << ": " << ec.message() << "\n";
-        std::this_thread::sleep_for(retryDelay);
-        sess->run();
+        std::this_thread::sleep_for(std::chrono::seconds(m_retryDelay_sec));
+        run();
     }
 
+    bool hasSubscriptions()
+    {
+        return !(m_depthSubscriptions.empty() && !m_tradeSubscriptions.empty());
+    }
 
 public:
     // Resolver and socket require an io_context
     explicit
     session(net::io_context& ioc, 
         ssl::context& ctx,
-        const PriceCallback& tradeCallback,
-        const PriceCallback& depthCallback,
-        std::string host,
-        std::string port,
-        std::string path)
+        const PriceCallback& priceCallback,
+        const std::string& host,
+        const std::string& port,
+        const std::string& path,
+        const uint32_t& retryDelay,
+        const ErrCallback& errCallback,
+        const ReadyCallback& readyCallback)
         : m_resolver(net::make_strand(ioc))
         , m_ws(net::make_strand(ioc), ctx)
-        , m_tradeCallback(tradeCallback)
-        , m_depthCallback(depthCallback)
+        , m_priceCallback(priceCallback)
         , m_inFlight(false)
         , m_host(host)
         , m_port(port)
         , m_path(path)
+        , m_retryDelay_sec(retryDelay)
+        , m_errCallback(errCallback)
+        , m_readyCallback(readyCallback)
     {}
 
-    void subscribeTrade(const std::string& symbol)
+    bool subscribeTrade(const std::string& symbol)
     {
+        if (m_tradeSubscriptions.contains(symbol))
+            return false;
+
         std::string stream = symbol + "@trade";
         boost::json::object jsonObj {
             {"method", "SUBSCRIBE"},
@@ -264,10 +284,15 @@ public:
         };
 
         sendOrQueue(boost::json::serialize(jsonObj));
+        m_tradeSubscriptions.insert(symbol);
+        return true;
     }
 
-    void subscribeDepth(const std::string& symbol)
+    bool subscribeDepth(const std::string& symbol)
     {
+        if (m_depthSubscriptions.contains(symbol))
+            return false;
+
         std::string stream = symbol + "@depth5";
         boost::json::object jsonObj {
             {"method", "SUBSCRIBE"},
@@ -276,10 +301,15 @@ public:
         };
 
         sendOrQueue(boost::json::serialize(jsonObj));
+        m_depthSubscriptions.insert(symbol);
+        return true;
     }
 
-    void unsubscribeTrade(const std::string& symbol)
+    bool unsubscribeTrade(const std::string& symbol)
     {
+        if (!m_tradeSubscriptions.contains(symbol))
+            return false;
+
         std::string stream = symbol + "@trade";
         boost::json::object jsonObj {
             {"method", "UNSUBSCRIBE"},
@@ -288,10 +318,15 @@ public:
         };
 
         sendOrQueue(boost::json::serialize(jsonObj));
+        m_tradeSubscriptions.erase(symbol);
+        return true;
     }
 
-    void unsubscribeDepth(const std::string& symbol)
+    bool unsubscribeDepth(const std::string& symbol)
     {
+        if (!m_depthSubscriptions.contains(symbol))
+            return false;
+
         std::string stream = symbol + "@depth5";
         boost::json::object jsonObj {
             {"method", "UNSUBSCRIBE"},
@@ -300,6 +335,8 @@ public:
         };
 
         sendOrQueue(boost::json::serialize(jsonObj));
+        m_depthSubscriptions.erase(symbol);
+        return true;
     }
 
     void sendOrQueue(const std::string& jsonCmd)
@@ -331,30 +368,8 @@ public:
 
 };
 
-//------------------------------------------------------------------------------
-
-void fail(beast::error_code ec,
-          char const* what,
-          std::shared_ptr<session> sess,
-          std::chrono::seconds retryDelay)
-{
-    std::cerr << what << ": " << ec.message() << "\n";
-    std::this_thread::sleep_for(retryDelay);
-    sess->run();
-}
-
 int main(int argc, char** argv)
 {
-    // Check command line arguments.
-    // if(argc != 4)
-    // {
-    //     std::cerr <<
-    //         "Usage: websocket-client-async-ssl <host> <port> <text>\n" <<
-    //         "Example:\n" <<
-    //         "    websocket-client-async-ssl echo.websocket.org 443 \"Hello, world!\"\n";
-    //     return EXIT_FAILURE;
-    // }
-
     char const* host = "stream.binance.com";
     char const* port = "9443";
     auto const path = "/stream";
@@ -365,29 +380,20 @@ int main(int argc, char** argv)
     // The SSL context is required, and holds certificates
     ssl::context ctx{ssl::context::tlsv12_client};
 
-    // This holds the root certificate used for verification
-    //load_root_certificates(ctx);
-
     // Launch the asynchronous operation
     auto sess = std::make_shared<session>(ioc,
         ctx, 
-        [](const std::string& symbol, const std::string& price) {
-            std::cout << "Trade: " << symbol << " - " << price << std::endl;
-        },
-        [](const std::string& symbol, const std::string& depth) {
-            std::cout << "Depth: " << symbol << " - " << depth << std::endl;
+        [](const std::string& update) {
+            std::cout << "Update: " << update << std::endl;
         },
         host,
         port,
-        path
-    );
+        path,
+        10,
+        [](const beast::error_code& ec, bool isFatal){},
+        [](){});
 
     sess->run();
-    std::this_thread::sleep_for(std::chrono::seconds(10)); // wait for connection to establish
-    
-
-    // Run the I/O service. The call will return when
-    // the socket is closed.
     ioc.run();
 
     return EXIT_SUCCESS;

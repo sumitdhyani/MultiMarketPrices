@@ -10,3 +10,6 @@
 [submodule "ThirdParty/MTTools"]
 	path = ThirdParty/MTTools
 	url = https://github.com/sumitdhyani/MTTools.git
+[submodule "ThirdParty/NanoLog"]
+	path = ThirdParty/NanoLog
+	url = https://github.com/PlatformLab/NanoLog

@@ -1,20 +1,3 @@
-//
-// Copyright (c) 2016-2019 Vinnie Falco (vinnie dot falco at gmail dot com)
-//
-// Distributed under the Boost Software License, Version 1.0. (See accompanying
-// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
-//
-// Official repository: https://github.com/boostorg/beast
-//
-
-//------------------------------------------------------------------------------
-//
-// Example: WebSocket SSL client, asynchronous
-//
-//------------------------------------------------------------------------------
-
-//#include "example/common/root_certificates.hpp"
-
 #include <boost/beast/core.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
@@ -38,10 +21,6 @@ namespace net = boost::asio;            // from <boost/asio.hpp>
 namespace ssl = boost::asio::ssl;       // from <boost/asio/ssl.hpp>
 using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 
-//------------------------------------------------------------------------------
-
-class session;
-
 // Sends a WebSocket message and prints the response
 class session : public std::enable_shared_from_this<session>
 {
@@ -62,6 +41,7 @@ class session : public std::enable_shared_from_this<session>
     const ReadyCallback m_readyCallback;
     std::queue<std::string> m_commandQueue;
     bool m_inFlight;
+    bool m_connected;
     int m_msgNo;
     const uint32_t m_retryDelay_sec;
     std::set<std::string> m_depthSubscriptions;
@@ -147,14 +127,13 @@ class session : public std::enable_shared_from_this<session>
     void on_handshake(beast::error_code ec)
     {
         if(ec) return fail(ec, "handshake");
-
+        m_connected = true;
         std::cout << "[Binance WS] on_handshake" << std::endl;
 
         for (auto const& symbol : m_tradeSubscriptions) subscribeTrade(symbol);
         for (auto const& symbol : m_depthSubscriptions) subscribeDepth(symbol);
         
-        //subscribeDepth("btcusdt");
-        subscribeTrade("btcusdt");
+        m_readyCallback();
         read();
     }
 
@@ -235,9 +214,17 @@ class session : public std::enable_shared_from_this<session>
         // If we get here then the connection is closed gracefully
     }
 
+    bool isErrorFatal(const beast::error_code& ec)
+    {
+        return false;
+    }
+
     void fail(beast::error_code ec, char const* what)
     {
+        m_connected = false;
+        m_errCallback(ec, false);
         std::cerr << what << ": " << ec.message() << "\n";
+        if (isErrorFatal(ec)) return;
         std::this_thread::sleep_for(std::chrono::seconds(m_retryDelay_sec));
         run();
     }
@@ -263,6 +250,7 @@ public:
         , m_ws(net::make_strand(ioc), ctx)
         , m_priceCallback(priceCallback)
         , m_inFlight(false)
+        , m_connected(false)
         , m_host(host)
         , m_port(port)
         , m_path(path)
@@ -341,7 +329,7 @@ public:
 
     void sendOrQueue(const std::string& jsonCmd)
     {
-        if (m_inFlight) {
+        if (m_inFlight || !m_connected) {
             m_commandQueue.push(jsonCmd);
         } else {
             std::cout << "Sending command: " << jsonCmd << std::endl;
@@ -381,7 +369,8 @@ int main(int argc, char** argv)
     ssl::context ctx{ssl::context::tlsv12_client};
 
     // Launch the asynchronous operation
-    auto sess = std::make_shared<session>(ioc,
+    // std::shared_ptr<session> sess;
+    std::shared_ptr<session> sess = std::make_shared<session>(ioc,
         ctx, 
         [](const std::string& update) {
             std::cout << "Update: " << update << std::endl;
@@ -391,7 +380,10 @@ int main(int argc, char** argv)
         path,
         10,
         [](const beast::error_code& ec, bool isFatal){},
-        [](){});
+        [&sess](){
+            std::cout << "Connection established, subscribing to streams..." << std::endl;
+            sess->subscribeTrade("btcusdt");
+        });
 
     sess->run();
     ioc.run();

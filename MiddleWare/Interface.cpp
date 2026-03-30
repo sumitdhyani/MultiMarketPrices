@@ -2,9 +2,7 @@
 #include <string.h>
 #include <thread>
 #include <chrono>
-#include <HigherOrderFunctions.hpp>
 #include "Interface.h"
-
 
 // 3rd party library utils
 using Worker                = ULMTTools::WorkerThread;
@@ -15,6 +13,7 @@ using KafkaProducer         = kafka::clients::producer::KafkaProducer;
 using SendOption            = KafkaProducer::SendOption;
 using ProducerRecord        = kafka::clients::producer::ProducerRecord;
 using KafkaConsumer         = kafka::clients::consumer::KafkaConsumer;
+using AdminClient           = kafka::clients::admin::AdminClient;
 using SizedBuffer           = kafka::ConstBuffer;
 using RebalanceEventType    = kafka::clients::consumer::RebalanceEventType;
 using Header                = kafka::Header;
@@ -31,13 +30,20 @@ namespace Middleware
 
 void consumptionThread(KafkaConsumer& consumer,
                         Worker& worker,
-                    const MsgCallback& msgCallback)
+                        const MsgCallback& msgCallback,
+                        const ErrCallback& errCb)
 {
     while(true)
     {
         auto records = consumer.poll(std::chrono::milliseconds(100));
         for (const auto& record : records)
         {
+            if(auto err = record.error(); err)
+            {
+                errCb(err);
+                continue;
+            }
+
             const std::string& topic = record.topic();
             const int32_t& partition = record.partition();
             const int64_t& offset = record.offset();
@@ -146,64 +152,27 @@ bool validateInitParams(const std::string& appId,
     const InitCallback& initCallback,
     const ErrCallback& errCallback,
     const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
-    const std::unordered_map<MiddlewareConfig, std::string>& consumerProps)
+    const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
+    const ResponseCallback& responseCallback)
 {
-    if(appId.empty())
-    {
-        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "AppId is empty");
-        errCallback(error);
-        return false;
-    }
-    else if (appGroup.empty())
-    {
-        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "AppGroup is empty");
-        errCallback(error);
-        return false;
-    }
-    else if(!descriptionFunc)
-    {
-        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Description function is null");
-        errCallback(error);
-        return false;
-    }
-    else if(!heartBeatGenFunc)
-    {
-        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "HeartBeatGen function is null");
-        errCallback(error);
-        return false;
-    }
-    else if(heartbeatIntervalSec == 0)
-    {
-        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Heartbeat interval cannot be zero");
-        errCallback(error);
-        return false;
-    }
-    else if (!timer)
-    {
-        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Timer is null");
-        errCallback(error);
-        return false;
-    }
-    else if (!kafkaWorker)
-    {
-        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Worker thread is null");
-        errCallback(error);
-        return false;
-    }
-    else if (!msgCallback)
-    {
-        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Message callback is null");
-        errCallback(error);
-        return false;
-    }
-    else if (!initCallback)
-    {
-        Error error(RD_KAFKA_RESP_ERR_UNKNOWN, "Initialization callback is null");
-        errCallback(error);
-        return false;
-    }
+    Error error = Error(RD_KAFKA_RESP_ERR_NO_ERROR, "");
+    bool ret = false;
+    if(appId.empty())                   error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "AppId is empty");
+    else if (appGroup.empty())          error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "AppGroup is empty");
+    else if (!descriptionFunc)          error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Description function is null");
+    else if (!heartBeatGenFunc)         error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "HeartBeatGen function is null");
+    else if (heartbeatIntervalSec == 0) error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Heartbeat interval cannot be zero");
+    else if (!timer)                    error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Timer is null");
+    else if (!kafkaWorker)              error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Worker thread is null");
+    else if (!msgCallback)              error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Message callback is null");
+    else if (!initCallback)             error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Initialization callback is null");
+    else if (!responseCallback)         error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Response callback is None");
+    else                                ret = true;
 
-    return true;
+
+    /******************************************************************************************************/
+    errCallback(error);
+    return ret;
 }
 
 void initializeMiddleWare(const std::string& appId,
@@ -220,7 +189,19 @@ void initializeMiddleWare(const std::string& appId,
     const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
     const ResponseCallback& responseCallback)
 {
-    if (!validateInitParams(appId, appGroup, descriptionFunc, heartBeatGenFunc, heartbeatIntervalSec, timer, kafkaWorker, msgCallback, initCallback, errCallback, producerProps, consumerProps))
+    if (!validateInitParams(appId,
+            appGroup,
+            descriptionFunc,
+            heartBeatGenFunc,
+            heartbeatIntervalSec,
+            timer,
+            kafkaWorker,
+            msgCallback,
+            initCallback,
+            errCallback,
+            producerProps,
+            consumerProps,
+            responseCallback))
     {
         return;
     }
@@ -245,6 +226,17 @@ void initializeMiddleWare(const std::string& appId,
             kafkaConsumerProps.put(*key, value);    
         }
         enrichProducerPropsWithErrorCb(kafkaConsumerProps, errCallback);
+
+        Properties adminProps;
+        adminProps.put(*MiddlewareConfig::bootstrap_servers(),
+                        producerProps.at(MiddlewareConfig::bootstrap_servers()));
+
+        AdminClient adminClient(adminProps);
+        if(auto res = adminClient.createTopics({appId}, 1, 3);
+           res.error && res.error.value() != RD_KAFKA_RESP_ERR_TOPIC_ALREADY_EXISTS)
+        {
+            throw res.error;
+        }
 
         kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appGroup);
         groupConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
@@ -360,10 +352,10 @@ void initializeMiddleWare(const std::string& appId,
     };
 
     auto getSubsciptionFunc =
-    [](const std::shared_ptr<KafkaConsumer>& consumer)
+    [errCallback](const std::shared_ptr<KafkaConsumer>& consumer)
     {
         return 
-        [consumer](const std::string& topic, const RebalanceCallback& rebalanceCallback)
+        [consumer, errCallback](const std::string& topic, const RebalanceCallback& rebalanceCallback)
         {
             if (topic.empty()) return APIError::TopicEmpty;
             
@@ -372,23 +364,31 @@ void initializeMiddleWare(const std::string& appId,
                 return APIError::Ok;
             }
 
-            consumer->subscribe(
-                {topic}, 
-                [rebalanceCallback](
-                    const RebalanceEventType et,
-                    const TopicPartitions& tps ) 
-                {
-                    TopicAssignmentEvent assignmentEvent =
-                        (et == RebalanceEventType::PartitionsAssigned) ?
-                        TopicAssignmentEvent::PartitionAssigned :
-                        TopicAssignmentEvent::PartitionRevoked;
-
-                    for(auto const& [topic, partition] : tps)
+            try
+            {
+                consumer->subscribe(
+                    {topic}, 
+                    [rebalanceCallback](
+                        const RebalanceEventType et,
+                        const TopicPartitions& tps ) 
                     {
-                        rebalanceCallback(assignmentEvent, topic, partition);
+                        TopicAssignmentEvent assignmentEvent =
+                            (et == RebalanceEventType::PartitionsAssigned) ?
+                            TopicAssignmentEvent::PartitionAssigned :
+                            TopicAssignmentEvent::PartitionRevoked;
+
+                        for(auto const& [topic, partition] : tps)
+                        {
+                            rebalanceCallback(assignmentEvent, topic, partition);
+                        }
                     }
-                }
-            );
+                );
+            }
+            catch(Error& e)
+            {
+                errCallback(e);
+                return APIError::SubscriptionFailed;
+            }
             return APIError::Ok;
         };
     };
@@ -414,11 +414,12 @@ void initializeMiddleWare(const std::string& appId,
         // Here we can do some common processing for all messages before passing to user defined callback, e.g. logging, metrics, etc.
     };
 
+
+
     RequestFunc requestFunc =
     [producerFunc, appId](const uint64_t& reqId,
         const std::string& payload,
         const std::string& targetTopic,
-        const std::string& destTopic,
         const SendCallback& sendCallback)
     {
         producerFunc(targetTopic,
@@ -426,13 +427,13 @@ void initializeMiddleWare(const std::string& appId,
                     appId,
                     payload,
                     {{HeaderKey::reqId(), std::to_string(reqId)},
-                     {HeaderKey::destTopic(), destTopic}},
+                     {HeaderKey::destTopic(), appId}},
                     sendCallback);
         return APIError::Ok;
     };
 
-    std::thread gcThread([groupConsumer, kafkaWorker, refinedMsgCallback]() {
-        consumptionThread(*groupConsumer, *kafkaWorker, refinedMsgCallback);
+    std::thread gcThread([groupConsumer, kafkaWorker, refinedMsgCallback, errCallback]() {
+        consumptionThread(*groupConsumer, *kafkaWorker, refinedMsgCallback, errCallback);
     });
         
     timer->install([producerFunc, errCallback, appId, heartBeatGenFunc]() {
@@ -444,9 +445,16 @@ void initializeMiddleWare(const std::string& appId,
                     internalSendCallback);
     }, std::chrono::seconds(heartbeatIntervalSec));
 
+
+
     initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc, requestFunc);
 
-    consumptionThread(*individualConsumer, *kafkaWorker, refinedMsgCallback);
+
+    if(individualConsumerFunc(appId, nullptr) != APIError::Ok) {
+        return errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unable to subscribe self topic"));
+    }
+    
+    consumptionThread(*individualConsumer, *kafkaWorker, refinedMsgCallback, errCallback);
 }
 
 }

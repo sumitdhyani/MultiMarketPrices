@@ -10,6 +10,7 @@
 #include <MTTools/Timer.hpp>
 #include <MTTools/WorkerThread.hpp>
 #include <kafka/Error.h>
+#include <kafka/AdminClient.h>
 #include <kafka/KafkaProducer.h>
 #include <kafka/KafkaConsumer.h>
 #include <Constants.h>
@@ -37,7 +38,6 @@ namespace Middleware
     using RequestFunc               = std::function<APIError (const uint64_t&,  // ReqId
                                                     const std::string&,         // Req payload
                                                     const std::string&,         // target topic
-                                                    const std::string&,         // Dest Topic
                                                     const SendCallback&)>;       
     
 

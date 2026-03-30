@@ -351,5 +351,6 @@ enum class APIError
     TopicEmpty,
     MsgTypeEmpty,
     KeyEmpty,
-    PayloadEmpty
+    PayloadEmpty,
+    SubscriptionFailed
 };

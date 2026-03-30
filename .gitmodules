@@ -7,3 +7,6 @@
 [submodule "ThirdParty/NanoLog"]
 	path = ThirdParty/NanoLog
 	url = https://github.com/PlatformLab/NanoLog
+[submodule "ThirdParty/CPPFsm"]
+	path = ThirdParty/CPPFsm
+	url = https://github.com/sumitdhyani/CPPFsm.git

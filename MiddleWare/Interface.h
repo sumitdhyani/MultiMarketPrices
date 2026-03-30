@@ -31,6 +31,14 @@ namespace Middleware
                                                     const std::string&,   // Message payload
                                                     const KeyValuePairs&, // Headers
                                                     const SendCallback&)>; // Sucess callback
+
+    using ResponseCallback          = std::function<void(const uint64_t&, const std::string&, bool)>;
+
+    using RequestFunc               = std::function<APIError (const uint64_t&,  // ReqId
+                                                    const std::string&,         // Req payload
+                                                    const std::string&,         // target topic
+                                                    const std::string&,         // Dest Topic
+                                                    const SendCallback&)>;       
     
 
     // No memory management done 
@@ -64,7 +72,8 @@ namespace Middleware
     using InitCallback = std::function<void(const ProducerFunc&,
                                             const LowLevelProducerFunc&,
                                             const ConsumerFunc&,    // To subscribe as group
-                                            const ConsumerFunc&)>;  // To subscribe as individual
+                                            const ConsumerFunc&,    // To subscribe as individual
+                                            const RequestFunc&)>;
 
     void initializeMiddleWare(const std::string& appId,
                             const std::string& appType,
@@ -77,5 +86,6 @@ namespace Middleware
                             const InitCallback& initCallback,
                             const ErrCallback& errCallback,
                             const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
-                            const std::unordered_map<MiddlewareConfig, std::string>& consumerProps);
+                            const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
+                            const ResponseCallback& responseCallback);
 }

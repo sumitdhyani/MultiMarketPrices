@@ -2,6 +2,7 @@
 #include <string.h>
 #include <thread>
 #include <chrono>
+#include <HigherOrderFunctions.hpp>
 #include "Interface.h"
 
 
@@ -71,6 +72,58 @@ void consumptionThread(KafkaConsumer& consumer,
     }
 }
 
+bool handleResponse(const std::string& topic,
+    const int32_t& partition,
+    const int64_t& offset,
+    const std::string& msgType,
+    const std::string& key,
+    const Middleware::KeyValuePairs& headers,
+    const std::string& msg,
+    const ResponseCallback& responseCallback,
+    const ErrCallback& errCallback)
+{
+    if (msgType != *MessageType::response() &&
+        msgType != *MessageType::last_response())
+    {
+        return false;
+    }
+
+    uint64_t reqId = 0;
+    if (auto it = headers.find(HeaderKey::respId());
+        it != headers.end())
+    {
+        bool isLast = false;
+        if (auto it = headers.find(HeaderKey::isLast()); 
+            it != headers.end())
+        {
+            auto const&[_, isLastStr] = *it;
+            if (isLastStr != "0" && isLastStr != "1")
+            {
+                errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Invalid isLast value in response header: " + isLastStr));
+                return true;
+            }
+
+            isLast = (isLastStr == "1");
+        }
+
+        auto const& [_, reqIdStr] = *it;
+        try
+        {
+            reqId = std::stoull(reqIdStr);
+            responseCallback(reqId, msg, isLast);
+        }
+        catch (const std::exception& e)
+        {
+            errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Invalid reqId in response header: " + reqIdStr));
+        }
+    }
+    else
+    {
+        errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Missing reqId in response header"));
+    }
+
+    return true;
+}
 
 void internalSendCallback(const RecordMetadata& rm, const Error& e)
 {
@@ -164,7 +217,8 @@ void initializeMiddleWare(const std::string& appId,
     const InitCallback& initCallback,
     const ErrCallback& errCallback,
     const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
-    const std::unordered_map<MiddlewareConfig, std::string>& consumerProps)
+    const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
+    const ResponseCallback& responseCallback)
 {
     if (!validateInitParams(appId, appGroup, descriptionFunc, heartBeatGenFunc, heartbeatIntervalSec, timer, kafkaWorker, msgCallback, initCallback, errCallback, producerProps, consumerProps))
     {
@@ -342,8 +396,43 @@ void initializeMiddleWare(const std::string& appId,
     ConsumerFunc groupConsumerFunc = getSubsciptionFunc(groupConsumer);
     ConsumerFunc individualConsumerFunc = getSubsciptionFunc(individualConsumer);
 
-    std::thread gcThread([groupConsumer, kafkaWorker, msgCallback]() {
-        consumptionThread(*groupConsumer, *kafkaWorker, msgCallback);
+
+    MsgCallback refinedMsgCallback =
+    [errCallback, responseCallback, msgCallback](const std::string& topic,
+                                        const int32_t& partition,
+                                        const int64_t& offset,
+                                        const std::string& msgType,
+                                        const std::string& key,
+                                        const KeyValuePairs& headers,
+                                        const std::string& payload)
+    {
+
+        if (!handleResponse(topic, partition, offset, msgType, key, headers, payload, responseCallback, errCallback))
+        {
+            msgCallback(topic, partition, offset, msgType, key, headers, payload);
+        }
+        // Here we can do some common processing for all messages before passing to user defined callback, e.g. logging, metrics, etc.
+    };
+
+    RequestFunc requestFunc =
+    [producerFunc, appId](const uint64_t& reqId,
+        const std::string& payload,
+        const std::string& targetTopic,
+        const std::string& destTopic,
+        const SendCallback& sendCallback)
+    {
+        producerFunc(targetTopic,
+                     MessageType::request(),
+                    appId,
+                    payload,
+                    {{HeaderKey::reqId(), std::to_string(reqId)},
+                     {HeaderKey::destTopic(), destTopic}},
+                    sendCallback);
+        return APIError::Ok;
+    };
+
+    std::thread gcThread([groupConsumer, kafkaWorker, refinedMsgCallback]() {
+        consumptionThread(*groupConsumer, *kafkaWorker, refinedMsgCallback);
     });
         
     timer->install([producerFunc, errCallback, appId, heartBeatGenFunc]() {
@@ -355,9 +444,9 @@ void initializeMiddleWare(const std::string& appId,
                     internalSendCallback);
     }, std::chrono::seconds(heartbeatIntervalSec));
 
-    initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc);
+    initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc, requestFunc);
 
-    consumptionThread(*individualConsumer, *kafkaWorker, msgCallback);
+    consumptionThread(*individualConsumer, *kafkaWorker, refinedMsgCallback);
 }
 
 }

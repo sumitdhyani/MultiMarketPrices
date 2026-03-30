@@ -241,6 +241,18 @@ struct HeaderKey : StringEnum<MetaEnum::HeaderKey, HeaderKey>
         static HeaderKey instance{"respId"};
         return instance;
     }
+
+    static HeaderKey const& destTopic()
+    { 
+        static HeaderKey instance{"destTopic"};
+        return instance;
+    }
+
+    static HeaderKey const& isLast()
+    { 
+        static HeaderKey instance{"isLast"};
+        return instance;
+    }
 };
 
 struct MiddlewareConfig : StringEnum<MetaEnum::MiddlewareConfig, MiddlewareConfig>

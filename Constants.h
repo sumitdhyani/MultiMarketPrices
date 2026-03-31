@@ -220,6 +220,63 @@ struct Tags : StringEnum<MetaEnum::Tags, Tags>
         static Tags instance{"appGroup"};
         return instance;
     }
+
+    static Tags const& latestOffSet()
+    { 
+        static Tags instance{"latestOffSet"};
+        return instance;
+    }
+
+    static Tags const& subscriptionKey()
+    { 
+        static Tags instance{"key"};
+        return instance;
+    }
+
+    static Tags const& symbol()
+    { 
+        static Tags instance{"key"};
+        return instance;
+    }
+
+    static Tags const& action()
+    { 
+        static Tags instance{"action"};
+        return instance;
+    }
+
+    static Tags const& subscription_type()
+    { 
+        static Tags instance{"type"};
+        return instance;
+    }
+};
+
+struct TagValues : StringEnum<MetaEnum::TagValues, Tags>
+{
+    static TagValues const& action_subscribe()
+    { 
+        static TagValues instance{"subscribe"};
+        return instance;
+    }
+
+    static TagValues const& action_unsubscribe()
+    { 
+        static TagValues instance{"unsubscribe"};
+        return instance;
+    }
+
+    static Tags const& subscription_type_depth()
+    { 
+        static Tags instance{"depth"};
+        return instance;
+    }
+
+    static Tags const& subscription_type_trade()
+    { 
+        static Tags instance{"trade"};
+        return instance;
+    }
 };
 
 struct HeaderKey : StringEnum<MetaEnum::HeaderKey, HeaderKey>

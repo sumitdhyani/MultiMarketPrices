@@ -250,6 +250,12 @@ struct Tags : StringEnum<MetaEnum::Tags, Tags>
         static Tags instance{"type"};
         return instance;
     }
+
+    static Tags const& group_identifier()
+    { 
+        static Tags instance{"group"};
+        return instance;
+    }
 };
 
 struct TagValues : StringEnum<MetaEnum::TagValues, Tags>
@@ -368,6 +374,14 @@ struct Topic : StringEnum<MetaEnum::Topic, Topic>
     static Topic const& test_topic()
     { 
         static Topic instance{"test_topic"};
+        return instance;
+    }
+
+    // Used to query the subscription state of a group
+    // gropu format: "<gateway_type>:<input_topic>:<partition>"
+    static Topic const& pubSub_sync_data_requests()
+    { 
+        static Topic instance{"pubSub_sync_data_requests"};
         return instance;
     }
 };

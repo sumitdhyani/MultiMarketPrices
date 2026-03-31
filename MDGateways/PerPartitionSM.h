@@ -19,8 +19,7 @@ using SubUnsubFunc = std::function<void(const std::string&, const std::string&)>
 
 // to be called when a sub/unsub call is actually made
 using ActionNotificationFunc =
-std::function<void(const int32_t&,  // Partition
-    const Instrument&,              // 
+std::function<void(const Instrument&,              // 
     const SubscriptionType&,        // 
     const bool&)>;                  // true: Sub, false: Unsub
 
@@ -129,7 +128,7 @@ IEventProcessor<Revoke>
             m_subFunc(*instrument, *subscriptionType):
             m_unsubFunc(*instrument, *subscriptionType);
 
-        m_actionNotificationFunc(m_partition, instrument, subscriptionType, subscribe);
+        m_actionNotificationFunc(instrument, subscriptionType, subscribe);
 
         return SpecialTransition::nullTransition;
     }

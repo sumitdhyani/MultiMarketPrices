@@ -1,5 +1,5 @@
 project(BinanceMD)
-set(ALL_SOURCES Binance.cpp)
+set(ALL_SOURCES Binance.cpp WebSockets.cpp)
 
 add_executable("${PROJECT_NAME}" "${ALL_SOURCES}")
 add_dependencies("${PROJECT_NAME}" MiddleWare MDFsm)

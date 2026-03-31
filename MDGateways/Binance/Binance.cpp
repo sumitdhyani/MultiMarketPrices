@@ -9,26 +9,39 @@
 #include <MiddleWare/Interface.h>
 #include <Constants.h>
 #include <PerPartitionSM.h>
+#include <UUIDGen.hpp>
 
 using Timer = ULMTTools::Timer;
 namespace json = boost::json;
 std::string appId = "DummyDumper_1";
 std::string appGroup = "DummyDumper_Group";
+std::string price_subscriptions_topic = "binance_price_subscriptions";
 
 std::unordered_map<int32_t, std::unique_ptr<PerPartitionFSM>> partitionFSMs;
 
 void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
                         const std::string& topic,
-                        const int32_t& partition)
+                        const int32_t& partition,
+                        const Middleware::ProducerFunc& producerFunc)
 {
     if (rebalanceType == TopicAssignmentEvent::PartitionAssigned)
     {
         if (auto it = partitionFSMs.find(partition); it == partitionFSMs.end())
         {
-            partitionFSMs[partition] = 
+            auto newFsm =
             std::make_unique<PerPartitionFSM>(partition,
-                nullptr, nullptr, nullptr);
-            partitionFSMs[partition]->start();
+                [](const std::string&, const std::string&){},
+                [](const std::string&, const std::string&){},
+                [producerFunc](const Instrument& instrument,
+                    const SubscriptionType& subType,
+                    const bool& isSub)
+                {
+                    // Logic o send sync data
+                }
+            );
+            
+            newFsm->start();
+            partitionFSMs[partition] = std::move(newFsm);
         }
         else
         {
@@ -61,21 +74,6 @@ std::string getHeartBeatMsg()
     }));
 }
 
-
-bool findAndExec(const uint32_t& partition,
-                 const std::function<void(PerPartitionFSM&)>& func)
-{
-    bool ret = true;
-    if (auto it = partitionFSMs.find(partition); it != partitionFSMs.end())
-    {
-        auto const& [_, existingFSM] = *it;
-        func(*existingFSM);
-    }
-    else ret = false;
-
-    return ret;
-}
-
 void msgCb(const std::string& topic,
     const int32_t& partition,
     const int64_t& offset,
@@ -87,8 +85,6 @@ void msgCb(const std::string& topic,
     if (msgType == *MessageType::subscribe() ||
         msgType == *MessageType::unsubscribe())
     {
-        auto it = partitionFSMs.end();
-        it = partitionFSMs.find(partition);
         if (auto it = partitionFSMs.find(partition); 
             it != partitionFSMs.end())
         {
@@ -112,12 +108,12 @@ std::string getDescMsg()
 
 void initErrorCb(const Middleware::Error& err)
 {
+    if(!err) return;
     std::cout << "Error while initializing Middleware: " << err.value() << ", " << err.message() << std::endl;
 }
 
 void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
-{
-    
+{ 
     std::error_code ec;
     json::object jsonObj = json::parse(msg, ec).as_object();
     if (ec) {
@@ -126,27 +122,30 @@ void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
         std::cout << "Parsed JSON content: " << json::serialize(jsonObj) << std::endl;
     }
 
-    if(!isLast)
-    {
-        std::string params = jsonObj["key"].as_string().c_str();
-        std::erase_if(params, [](const char c) {
-            return c == '\'' || c == '(' || c == '#' || c == ')' || c == ' ';
-        });
-
-        auto tokens = params
+    std::string group = jsonObj.at(*Tags::group_identifier()).as_string().c_str();
+    auto const tokens = group
                 | std::views::split(',')
                 | std::ranges::to<std::vector<std::string>>();
-        
-        
-        std::cout << "Cleaned params: " << std::endl;
-        for(auto const& token: tokens)
-        {
-            std::cout << token << std::endl;
-        }
+    
+    if (tokens.size() != 3)
+    {
+        // Log error
+        return;
+    }
+
+    int32_t partition = atoi((*tokens.rbegin()).c_str());
+
+    if (auto it = partitionFSMs.find(partition); 
+        it != partitionFSMs.end())
+    {
+        auto& [_, existingFSM] = *it;
+        json::object obj = json::parse(msg).as_object();
+
+        isLast?
+            existingFSM->handleEvent(SubscriptionRecord(jsonObj)) :
+            existingFSM->handleEvent(DownloadEnd(jsonObj));
     }
 }
-
-
 
 void runningErrorCb(const Middleware::Error& error) {
     std::cout << "[ERROR CALLBACK] Code: " << error.value() 
@@ -184,47 +183,35 @@ int main()
     auto timer =  std::make_shared<ULMTTools::Timer>(scheduler);
     
     auto initCb =
-    [timer](const Middleware::ProducerFunc& producerFunc,
+    [](const Middleware::ProducerFunc& producerFunc,
             const Middleware::LowLevelProducerFunc& lowLevelProducerFunc,
             const Middleware::ConsumerFunc& groupConsumerFunc,
             const Middleware::ConsumerFunc& individualConsumerFunc,
             const Middleware::RequestFunc& requestFunc)
     {
-        // producerFunc("sdp_node_3",
-        //             MessageType::heartBeat(),
-        //             "dummy_app",
-        //             getHeartBeatMsg(),
-        //             {},
-        //             sencCb);
-        // std::cout << "Inside init callback" << std::endl;
-        // timer->install(
-        //     [producerFunc]() {
-        //     producerFunc(*Topic::test_topic(),
-        //                 MessageType::heartBeat(),
-        //                 "dummy_app",
-        //                 getHeartBeatMsg(),
-        //                 {},
-        //                 sencCb);
-        //     },
-        //     std::chrono::seconds(5)
-        // );
-
+        UUIDGenerator gen;
         std::string serviceGroup = "binance_price_fetcher";
         std::string topic = "binance_price_subscriptions";
-        individualConsumerFunc(*Topic::test_topic(), nullptr);
-        for(uint16_t partition = 0, reqId = 1; partition < 11; ++partition, ++reqId)
-        {
-            std::string group = serviceGroup + ":" + topic + ":" + std::to_string(partition);
-            requestFunc(++reqId,
-                        json::serialize(json::object{{
-                            {"group", group},
-                            {"destination_topic", "test_topic"}
-                        }}),
-                        "pubSub_sync_data_requests",
-                        sencCb
-            );
-        }
 
+        requestFunc(gen.generate64(),
+                    json::serialize(json::object{{
+                        {"group", serviceGroup + ":" + topic + ":0"},
+                        {"destination_topic", "test_topic"}
+                    }}),
+                    "pubSub_sync_data_requests",
+                    sencCb
+        );
+
+        groupConsumerFunc(price_subscriptions_topic,
+            [producerFunc](const TopicAssignmentEvent& rebalanceType,
+                const std::string& topic,
+                const int32_t& partition) {
+                rebalanceCallback(rebalanceType,
+                                    topic,
+                                    partition,
+                                    producerFunc);
+            }
+        );
     };
 
     std::string heartBeatStr = getHeartBeatMsg();

@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <optional>
 #include <functional>
 #include <tuple>
 #include <unordered_map>
@@ -67,7 +68,7 @@ namespace Middleware
                                                 const int32_t&)>;
 
     using ConsumerFunc = std::function<APIError (const std::string&,
-                                                const RebalanceCallback& rebalanceCallback)>;
+                                                const std::optional<RebalanceCallback>& rebalanceCallback)>;
 
     using InitCallback = std::function<void(const ProducerFunc&,
                                             const LowLevelProducerFunc&,

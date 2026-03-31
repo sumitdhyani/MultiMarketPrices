@@ -356,37 +356,37 @@ public:
 
 };
 
-int main(int argc, char** argv)
-{
-    char const* host = "stream.binance.com";
-    char const* port = "9443";
-    auto const path = "/stream";
+// int main(int argc, char** argv)
+// {
+//     char const* host = "stream.binance.com";
+//     char const* port = "9443";
+//     auto const path = "/stream";
 
-    // The io_context is required for all I/O
-    net::io_context ioc;
+//     // The io_context is required for all I/O
+//     net::io_context ioc;
 
-    // The SSL context is required, and holds certificates
-    ssl::context ctx{ssl::context::tlsv12_client};
+//     // The SSL context is required, and holds certificates
+//     ssl::context ctx{ssl::context::tlsv12_client};
 
-    // Launch the asynchronous operation
-    // std::shared_ptr<session> sess;
-    std::shared_ptr<session> sess = std::make_shared<session>(ioc,
-        ctx, 
-        [](const std::string& update) {
-            std::cout << "Update: " << update << std::endl;
-        },
-        host,
-        port,
-        path,
-        10,
-        [](const beast::error_code& ec, bool isFatal){},
-        [&sess](){
-            std::cout << "Connection established, subscribing to streams..." << std::endl;
-            sess->subscribeTrade("btcusdt");
-        });
+//     // Launch the asynchronous operation
+//     // std::shared_ptr<session> sess;
+//     std::shared_ptr<session> sess = std::make_shared<session>(ioc,
+//         ctx, 
+//         [](const std::string& update) {
+//             std::cout << "Update: " << update << std::endl;
+//         },
+//         host,
+//         port,
+//         path,
+//         10,
+//         [](const beast::error_code& ec, bool isFatal){},
+//         [&sess](){
+//             std::cout << "Connection established, subscribing to streams..." << std::endl;
+//             sess->subscribeTrade("btcusdt");
+//         });
 
-    sess->run();
-    ioc.run();
+//     sess->run();
+//     ioc.run();
 
-    return EXIT_SUCCESS;
-}
+//     return EXIT_SUCCESS;
+// }

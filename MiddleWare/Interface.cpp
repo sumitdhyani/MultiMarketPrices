@@ -355,7 +355,7 @@ void initializeMiddleWare(const std::string& appId,
     [errCallback](const std::shared_ptr<KafkaConsumer>& consumer)
     {
         return 
-        [consumer, errCallback](const std::string& topic, const RebalanceCallback& rebalanceCallback)
+        [consumer, errCallback](const std::string& topic, const std::optional<RebalanceCallback>& rebalanceCallback)
         {
             if (topic.empty()) return APIError::TopicEmpty;
             
@@ -379,7 +379,7 @@ void initializeMiddleWare(const std::string& appId,
 
                         for(auto const& [topic, partition] : tps)
                         {
-                            rebalanceCallback(assignmentEvent, topic, partition);
+                            (*rebalanceCallback)(assignmentEvent, topic, partition);
                         }
                     }
                 );

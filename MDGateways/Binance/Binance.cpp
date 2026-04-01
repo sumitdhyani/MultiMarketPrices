@@ -1,256 +1,106 @@
-#include <iostream>
-#include <chrono>
-#include <ranges>
-#include <system_error>
-#include <stdint.h>
-#include <boost/json.hpp>
-#include <MTTools/TaskScheduler.hpp>
-#include <MTTools/WorkerThread.hpp>
-#include <MiddleWare/Interface.h>
-#include <Constants.h>
-#include <PerPartitionSM.h>
-#include <UUIDGen.hpp>
+#include <PlatformComm/PlatformComm.h>
+#include "WebSockets.h"
 
-using Timer = ULMTTools::Timer;
-namespace json = boost::json;
-std::string appId = "binance_price_fetcher_node_4";
-std::string appGroup = "binance_price_fetcher";
-std::string inTopic = "binance_price_subscriptions";
-
-std::unordered_map<int32_t, std::unique_ptr<PerPartitionFSM>> partitionFSMs;
-Middleware::ProducerFunc producerFunc;
-Middleware::RequestFunc requestFunc;
-
-void sencCb(const Middleware::RecordMetadata& rm, const Middleware::Error& err)
+void initMiddleware(const std::string& brokers,
+        const PubSubFunc& subFunc,
+        const PubSubFunc& unsububFunc,
+        const std::function<void(const DataFunc&)>& registrationFunc,
+        const std::shared_ptr<ULMTTools::Timer>& timer,
+        const std::shared_ptr<ULMTTools::WorkerThread>& workerThread,
+        const std::string& appId,
+        const std::string& appGroup,
+        const std::string& inTopic,
+        const Middleware::ErrCallback& initErrorCb)
 {
-    if(!err) return;
-    std::cout << "Error while sending msg, code "
-                << err.value() << " details: "
-                << err.message() << std::endl;
-}
-
-void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
-                        const std::string& topic,
-                        const int32_t& partition)
-{
-    if (rebalanceType == TopicAssignmentEvent::PartitionAssigned)
-    {
-        if (auto it = partitionFSMs.find(partition); it == partitionFSMs.end())
-        {
-            auto newFsm =
-            std::make_unique<PerPartitionFSM>(partition,
-                [](const std::string&, const std::string&){},
-                [](const std::string&, const std::string&){}
-            );
-
-            UUIDGenerator gen;
-            const std::string topic = "binance_price_subscriptions";
-            const std::string group = appGroup + ":" + topic + ":" + std::to_string(partition);
-
-            requestFunc(gen.generate64(),
-                        json::serialize(json::object{{
-                            {*Tags::group_identifier(), group},
-                            {*Tags::destination_topic(), appId}
-                        }}),
-                        *Topic::pubSub_sync_data_requests(),
-                        sencCb
-            );
-            
-            newFsm->start();
-            partitionFSMs[partition] = std::move(newFsm);
-        }
-        else
-        {
-            auto const& [_, existingFSM] = *it;
-            existingFSM->handleEvent(Assign{});
-        }
-    }
-    else if (rebalanceType == TopicAssignmentEvent::PartitionRevoked)
-    {
-        if (auto it = partitionFSMs.find(partition); it != partitionFSMs.end())
-        {
-            auto const& [_, existingFSM] = *it;
-            existingFSM->handleEvent(Revoke{});
-        }
-        else
-        {
-            // Log error should never be here
-        }
-    }
-}
-
-std::string getHeartBeatMsg()
-{
-    return json::serialize(json::object({
-        {*Tags::message_type(),*MessageType::heartBeat()},
-        {*Tags::HeartBeatInterval(),5},
-        {*Tags::HeartBeatTimeout(),30},
-        {*Tags::appId(),appId},
-        {*Tags::appGroup(), appGroup}
-    }));
-}
-
-void msgCb(const std::string& topic,
-    const int32_t& partition,
-    const int64_t& offset,
-    const std::string& msgType,
-    const std::string& key,
-    const Middleware::KeyValuePairs& headers,
-    const std::string& msg)
-{
-    if (msgType == *MessageType::subscribe() ||
-        msgType == *MessageType::unsubscribe())
-    {
-        if (auto it = partitionFSMs.find(partition); 
-            it != partitionFSMs.end())
-        {
-            json::object obj = json::parse(msg).as_object();
-            Instrument instrument(obj.at(*Tags::symbol()).as_string().c_str());
-            SubscriptionType subType(obj.at(*Tags::subscription_type()).as_string().c_str());
-            bool isSub = msgType == *MessageType::subscribe();
-            std::string destTopic = obj.at(*Tags::destination_topic()).as_string().c_str();
-
-            auto& [_, existingFSM] = *it;
-            existingFSM->handleEvent(instrument,
-                            subType,
-                            isSub);
-
-            std::string key = "(\'" + *instrument + "\', \'" + *subType + "\')";
-            std::string group = appGroup + ":binance_price_subscriptions:" + std::to_string(partition);
-            producerFunc(*Topic::pubSub_sync_data(),
-                MessageType::sync_data_update(),
-                appId,
-                json::serialize(json::object{
-                    {*Tags::group_identifier(), group},
-                    {*Tags::subscriptionKey(), key},
-                    {*Tags::action(), isSub ?
-                        *TagValues::action_subscribe() :
-                        *TagValues::action_unsubscribe()},
-                    {*Tags::destination_topic(), destTopic}
-                }),
-                {},
-                sencCb
-            );
-
-        }
-    }
-}
-
-std::string getDescMsg()
-{
-    return json::serialize(json::object({
-        {*Tags::appId(),appId},
-        {*Tags::appGroup(), appGroup}
-    }));
-}
-
-void initErrorCb(const Middleware::Error& err)
-{
-    if(!err) return;
-    std::cout << "Error while initializing Middleware: " << err.value() << ", " << err.message() << std::endl;
-}
-
-void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
-{ 
-    std::error_code ec;
-    json::object jsonObj = json::parse(msg, ec).as_object();
-    if (ec) {
-        std::cerr << "Error parsing JSON: " << ec.message() << std::endl;
-    } else {
-        std::cout << "Parsed JSON content: " << json::serialize(jsonObj) << std::endl;
-    }
-
-    std::string group = jsonObj.at(*Tags::group_identifier()).as_string().c_str();
-    auto const tokens = group
-                | std::views::split(',')
-                | std::ranges::to<std::vector<std::string>>();
-    
-    if (tokens.size() != 3)
-    {
-        // Log error
-        std::cerr << "Error: Invalid group identifier format" << std::endl;
-        return;
-    }
-
-    int32_t partition = atoi((*tokens.rbegin()).c_str());
-
-    if (auto it = partitionFSMs.find(partition); 
-        it != partitionFSMs.end())
-    {
-        auto& [_, existingFSM] = *it;
-        json::object obj = json::parse(msg).as_object();
-
-        isLast?
-            existingFSM->handleEvent(SubscriptionRecord(jsonObj)) :
-            existingFSM->handleEvent(DownloadEnd(jsonObj));
-    }
-}
-
-void runningErrorCb(const Middleware::Error& error) {
-    std::cout << "[ERROR CALLBACK] Code: " << error.value() 
-                << " | Message: " << error.message() 
-                << " | Fatal: " << (error.isFatal() ? "YES" : "NO") 
-                << std::endl;
-
-    // Connection related errors handle karo
-    if (error.value() == RD_KAFKA_RESP_ERR__TRANSPORT ||
-        error.value() == RD_KAFKA_RESP_ERR__ALL_BROKERS_DOWN ||
-        error.value() == RD_KAFKA_RESP_ERR_NETWORK_EXCEPTION) {
-        
-        std::cout << ">>> Broker Disconnected / Network issue detected! Reconnecting...\n";
-    }
-    else
-    {
-        std::cout << "Error from middleware, details: " << error.message() << std::endl;
-    }
-
-    if (error.isFatal()) {
-        std::cerr << ">>> FATAL ERROR! Application should probably shutdown/restart.\n";
-    }
-}
-
-
-
-int main()
-{
-    auto scheduler = std::make_shared<ULMTTools::TaskScheduler>();
-    auto timer =  std::make_shared<ULMTTools::Timer>(scheduler);
-    
-    auto initCb =
-    [](const Middleware::ProducerFunc& producerFunc,
-            const Middleware::LowLevelProducerFunc& lowLevelProducerFunc,
-            const Middleware::ConsumerFunc& groupConsumerFunc,
-            const Middleware::ConsumerFunc& individualConsumerFunc,
-            const Middleware::RequestFunc& requestFunc)
-    {
-        ::producerFunc = producerFunc;
-        ::requestFunc = requestFunc;
-
-        groupConsumerFunc(inTopic, rebalanceCallback);
-    };
-
-    std::string heartBeatStr = getHeartBeatMsg();
-    std::string appStr = getDescMsg();
-
-    std::string brokers = "node_2:9092,node_3:9092";
-    std::cout << "Initializing middleware" << std::endl;
-    Middleware::initializeMiddleWare(appId,
-        appGroup,
-        [appStr]() { return appStr; },
-        [heartBeatStr]() { return heartBeatStr; },
-        5,
+    PlatformComm::init(brokers,
+        subFunc,
+        unsububFunc,
+        registrationFunc,
         timer,
-        std::make_shared<ULMTTools::WorkerThread>(),
-        msgCb,
-        initCb,
-        initErrorCb,
-        {
-            {MiddlewareConfig::bootstrap_servers(), brokers},
-        },
-        {
-            {MiddlewareConfig::bootstrap_servers(), brokers},
-            {MiddlewareConfig::group_id(), "DataDumperApp"}
-        },
-        responseCb
-    );
+        workerThread,
+        appId,
+        appGroup,
+        inTopic,
+        initErrorCb);
 }
+
+DataFunc dataFunc;
+
+void transformForPlatform(json::object& update)
+{
+    if (update.contains("s")) update["symbol"] = update["s"].as_string();
+    if (update.contains("p")) update["price"] = update["p"].as_string();
+    if (update.contains("q")) update["quantity"] = update["q"].as_string();
+
+    update.erase("s");
+    update.erase("p");
+    update.erase("q");
+}
+
+int main(int argc, char** argv)
+{
+    char const* host = "stream.binance.com";
+    char const* port = "9443";
+    auto const path = "/stream";
+
+    auto workerThread = std::make_shared<ULMTTools::WorkerThread>();
+    auto scheduler = std::make_shared<ULMTTools::TaskScheduler>();
+    auto timer = std::make_shared<ULMTTools::Timer>(scheduler);
+
+    // The io_context is required for all I/O
+    net::io_context ioc;
+
+    // The SSL context is required, and holds certificates
+    ssl::context ctx{ssl::context::tlsv12_client};
+
+    // Launch the asynchronous operation
+    // std::shared_ptr<session> sess;
+    std::shared_ptr<session> sess = std::make_shared<session>(ioc,
+        ctx, 
+        [workerThread](const std::string& update) {
+            auto obj = std::make_shared<json::object>(json::parse(update).as_object());
+            transformForPlatform(*obj);
+            auto objStr = std::make_shared<std::string>(json::serialize(*obj));
+            workerThread->push([obj, objStr](){
+                dataFunc(obj->at("symbol").as_string().c_str(),
+                        obj->contains("bids") ? PriceType::depth() : PriceType::trade(),
+                        *objStr);
+            });
+        },
+        host,
+        port,
+        path,
+        10,
+        [](const beast::error_code& ec, bool isFatal){},
+        [&sess, timer, workerThread](){
+            initMiddleware("node_2:9092,node_3:9092",
+                [&sess](const std::string& symbol, const PriceType& priceType){
+                    priceType == PriceType::trade() ?
+                        sess->subscribeTrade(symbol) :
+                        sess->subscribeDepth(symbol);
+                },
+                [&sess](const std::string& symbol, const PriceType& priceType){
+                    priceType == PriceType::trade() ?
+                        sess->unsubscribeTrade(symbol) :
+                        sess->unsubscribeDepth(symbol);
+                },
+                [](const DataFunc& dataFunc){
+                    // Registering the callback to receive price data from the exchange
+                    ::dataFunc = dataFunc;
+                },
+                timer,
+                workerThread,
+                "binance_price_fetcher_node_4",
+                "binance_price_fetcher",
+                "binance_price_subscriptions",
+                [](const Middleware::Error& error){
+                    std::cerr << "Error initializing middleware: " << error.message() << "\n";
+                });
+        });
+
+    sess->run();
+    ioc.run();
+
+    return 0;
+}
+

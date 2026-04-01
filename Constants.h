@@ -10,7 +10,8 @@ enum class MetaEnum
     HeaderKey,
     TagValues,
     MiddlewareConfig,
-    Topic
+    Topic,
+    PriceType
 };
 
 template<MetaEnum Enum>
@@ -182,6 +183,22 @@ struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
         return instance;
     }
 };
+
+struct PriceType : StringEnum<MetaEnum::PriceType, PriceType>
+{
+    static PriceType const& depth()
+    {
+        static PriceType instance{"depth"};
+        return instance;    
+    }
+
+    static PriceType const& trade()
+    {
+        static PriceType instance{"trade"};
+        return instance;    
+    }
+};
+
 
 struct Tags : StringEnum<MetaEnum::Tags, Tags>
 {

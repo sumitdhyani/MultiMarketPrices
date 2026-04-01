@@ -5,6 +5,8 @@ namespace json = boost::json;
 std::string appId;
 std::string appGroup;
 std::string inTopic;
+PubSubFunc subFunc;
+PubSubFunc unsubFunc;
 
 std::unordered_map<int32_t, std::unique_ptr<PerPartitionFSM>> partitionFSMs;
 Middleware::ProducerFunc producerFunc;
@@ -32,7 +34,7 @@ void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
                 [](const std::string&, const std::string&){}
             );
 
-            UUIDGenerator gen;
+            static UUIDGenerator gen;
             const std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
 
             requestFunc(gen.generate64(),
@@ -197,25 +199,37 @@ void runningErrorCb(const Middleware::Error& error) {
     }
 }
 
-void onPriceDataFromExchange(const std::string&)
+void onPriceDataFromExchange(const std::string& symbol,
+                            const PriceType& priceType,
+                            const std::string& update)
 {
-
+    producerFunc(*Topic::prices(),
+                priceType == PriceType::depth() ?
+                    MessageType::depth_update() :
+                    MessageType::trade_update(),
+                symbol,
+                update, 
+                {}, 
+                sencCb);
 }
 
 
-void init(const std::string& brokers,
+void PlatformComm::init(const std::string& brokers,
             const PubSubFunc& subFunc,
-         const PubSubFunc& unsububFunc,
-         const std::function<void(const DataFunc&)>& registrationFunc,
-         const std::shared_ptr<ULMTTools::Timer> timer,
-         const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
-        const std::string& appId,
-        const std::string& appGroup,
-        const std::string& inTopic)
+            const PubSubFunc& unsububFunc,
+            const std::function<void(const DataFunc&)>& registrationFunc,
+            const std::shared_ptr<ULMTTools::Timer> timer,
+            const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
+            const std::string& appId,
+            const std::string& appGroup,
+            const std::string& inTopic,
+            const Middleware::ErrCallback& initErrorCb)
 {
     ::appId = appId;
     ::appGroup = appGroup;
     ::inTopic = inTopic;
+    ::subFunc = subFunc;
+    ::unsubFunc = unsubFunc;
     
     registrationFunc(onPriceDataFromExchange);
     
@@ -246,12 +260,8 @@ void init(const std::string& brokers,
         msgCb,
         initCb,
         initErrorCb,
-        {
-            {MiddlewareConfig::bootstrap_servers(), brokers},
-        },
-        {
-            {MiddlewareConfig::bootstrap_servers(), brokers},
-        },
+        { {MiddlewareConfig::bootstrap_servers(), brokers} },
+        { {MiddlewareConfig::bootstrap_servers(), brokers} },
         responseCb
     );
 }

@@ -37,6 +37,7 @@ void transformForPlatform(json::object& update)
     update.erase("q");
 }
 
+bool middlewareInitialized = false;
 int main(int argc, char** argv)
 {
     char const* host = "stream.binance.com";
@@ -44,8 +45,7 @@ int main(int argc, char** argv)
     auto const path = "/stream";
 
     auto workerThread = std::make_shared<ULMTTools::WorkerThread>();
-    auto scheduler = std::make_shared<ULMTTools::TaskScheduler>();
-    auto timer = std::make_shared<ULMTTools::Timer>(scheduler);
+    auto timer = std::make_shared<ULMTTools::Timer>(std::make_shared<ULMTTools::TaskScheduler>());
 
     // The io_context is required for all I/O
     net::io_context ioc;
@@ -73,6 +73,9 @@ int main(int argc, char** argv)
         10,
         [](const beast::error_code& ec, bool isFatal){},
         [&sess, timer, workerThread](){
+            if (middlewareInitialized) return;
+            middlewareInitialized = true;
+            
             initMiddleware("node_2:9092,node_3:9092",
                 [&sess](const std::string& symbol, const PriceType& priceType){
                     priceType == PriceType::trade() ?
@@ -96,7 +99,8 @@ int main(int argc, char** argv)
                 [](const Middleware::Error& error){
                     std::cerr << "Error initializing middleware: " << error.message() << "\n";
                 });
-        });
+        }
+    );
 
     sess->run();
     ioc.run();

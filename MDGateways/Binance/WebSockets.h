@@ -68,9 +68,6 @@ class session : public std::enable_shared_from_this<session>
     {
         if(ec) return fail(ec, "connect");
 
-        // Update the host_ string. This will provide the value of the
-        // Host HTTP header during the WebSocket handshake.
-        // See https://tools.ietf.org/html/rfc7230#section-5.4
         std::string m_hostPort = m_host + ':' + std::to_string(ep.port());
 
         // Set a timeout on the operation
@@ -244,7 +241,7 @@ public:
         const std::string& host,
         const std::string& port,
         const std::string& path,
-        const uint32_t& retryDelay,
+        const uint32_t& retryDelay_sec,
         const ErrCallback& errCallback,
         const ReadyCallback& readyCallback)
         : m_resolver(net::make_strand(ioc))
@@ -255,7 +252,7 @@ public:
         , m_host(host)
         , m_port(port)
         , m_path(path)
-        , m_retryDelay_sec(retryDelay)
+        , m_retryDelay_sec(retryDelay_sec)
         , m_errCallback(errCallback)
         , m_readyCallback(readyCallback)
     {}

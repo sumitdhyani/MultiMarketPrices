@@ -235,7 +235,7 @@ struct Tags : StringEnum<MetaEnum::Tags, Tags>
 
     static Tags const& symbol()
     { 
-        static Tags instance{"key"};
+        static Tags instance{"symbol"};
         return instance;
     }
 
@@ -254,6 +254,18 @@ struct Tags : StringEnum<MetaEnum::Tags, Tags>
     static Tags const& group_identifier()
     { 
         static Tags instance{"group"};
+        return instance;
+    }
+
+    static Tags const& destination_topic()
+    { 
+        static Tags instance{"destination_topic"};
+        return instance;
+    }
+
+    static Tags const& destination_topics()
+    { 
+        static Tags instance{"destination_topics"};
         return instance;
     }
 };
@@ -382,6 +394,12 @@ struct Topic : StringEnum<MetaEnum::Topic, Topic>
     static Topic const& pubSub_sync_data_requests()
     { 
         static Topic instance{"pubSub_sync_data_requests"};
+        return instance;
+    }
+
+    static Topic const& pubSub_sync_data()
+    { 
+        static Topic instance{"pubSub_sync_data"};
         return instance;
     }
 };

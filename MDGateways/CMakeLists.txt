@@ -6,3 +6,4 @@ target_include_directories("${PROJECT_NAME}" PRIVATE
     "${CMAKE_SOURCE_DIR}/ThirdParty")
 
 add_subdirectory(Binance)
+add_subdirectory(PlatformComm)

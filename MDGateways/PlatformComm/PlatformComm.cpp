@@ -1,21 +1,10 @@
-#include <iostream>
-#include <chrono>
-#include <ranges>
-#include <system_error>
-#include <stdint.h>
-#include <boost/json.hpp>
-#include <MTTools/TaskScheduler.hpp>
-#include <MTTools/WorkerThread.hpp>
-#include <MiddleWare/Interface.h>
-#include <Constants.h>
-#include <PerPartitionSM.h>
-#include <UUIDGen.hpp>
+#include "PlatformComm.h"
 
 using Timer = ULMTTools::Timer;
 namespace json = boost::json;
-std::string appId = "binance_price_fetcher_node_4";
-std::string appGroup = "binance_price_fetcher";
-std::string inTopic = "binance_price_subscriptions";
+std::string appId;
+std::string appGroup;
+std::string inTopic;
 
 std::unordered_map<int32_t, std::unique_ptr<PerPartitionFSM>> partitionFSMs;
 Middleware::ProducerFunc producerFunc;
@@ -44,8 +33,7 @@ void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
             );
 
             UUIDGenerator gen;
-            const std::string topic = "binance_price_subscriptions";
-            const std::string group = appGroup + ":" + topic + ":" + std::to_string(partition);
+            const std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
 
             requestFunc(gen.generate64(),
                         json::serialize(json::object{{
@@ -116,7 +104,7 @@ void msgCb(const std::string& topic,
                             isSub);
 
             std::string key = "(\'" + *instrument + "\', \'" + *subType + "\')";
-            std::string group = appGroup + ":binance_price_subscriptions:" + std::to_string(partition);
+            std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
             producerFunc(*Topic::pubSub_sync_data(),
                 MessageType::sync_data_update(),
                 appId,
@@ -209,12 +197,27 @@ void runningErrorCb(const Middleware::Error& error) {
     }
 }
 
-
-
-int main()
+void onPriceDataFromExchange(const std::string&)
 {
-    auto scheduler = std::make_shared<ULMTTools::TaskScheduler>();
-    auto timer =  std::make_shared<ULMTTools::Timer>(scheduler);
+
+}
+
+
+void init(const std::string& brokers,
+            const PubSubFunc& subFunc,
+         const PubSubFunc& unsububFunc,
+         const std::function<void(const DataFunc&)>& registrationFunc,
+         const std::shared_ptr<ULMTTools::Timer> timer,
+         const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
+        const std::string& appId,
+        const std::string& appGroup,
+        const std::string& inTopic)
+{
+    ::appId = appId;
+    ::appGroup = appGroup;
+    ::inTopic = inTopic;
+    
+    registrationFunc(onPriceDataFromExchange);
     
     auto initCb =
     [](const Middleware::ProducerFunc& producerFunc,
@@ -226,13 +229,12 @@ int main()
         ::producerFunc = producerFunc;
         ::requestFunc = requestFunc;
 
-        groupConsumerFunc(inTopic, rebalanceCallback);
+        groupConsumerFunc(::inTopic, rebalanceCallback);
     };
 
     std::string heartBeatStr = getHeartBeatMsg();
     std::string appStr = getDescMsg();
 
-    std::string brokers = "node_2:9092,node_3:9092";
     std::cout << "Initializing middleware" << std::endl;
     Middleware::initializeMiddleWare(appId,
         appGroup,
@@ -240,7 +242,7 @@ int main()
         [heartBeatStr]() { return heartBeatStr; },
         5,
         timer,
-        std::make_shared<ULMTTools::WorkerThread>(),
+        workerThread,
         msgCb,
         initCb,
         initErrorCb,
@@ -249,7 +251,6 @@ int main()
         },
         {
             {MiddlewareConfig::bootstrap_servers(), brokers},
-            {MiddlewareConfig::group_id(), "DataDumperApp"}
         },
         responseCb
     );

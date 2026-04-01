@@ -17,12 +17,6 @@ template <typename Derived>
 using FSM = ULFSM::FSM<Derived>;
 using SubUnsubFunc = std::function<void(const std::string&, const std::string&)>;
 
-// to be called when a sub/unsub call is actually made
-using ActionNotificationFunc =
-std::function<void(const Instrument&,              // 
-    const SubscriptionType&,        // 
-    const bool&)>;                  // true: Sub, false: Unsub
-
 struct Downloading : State,
 IEventProcessor<SubscriptionRecord>,
 IEventProcessor<DownloadEnd>,
@@ -34,18 +28,14 @@ IEventProcessor<Revoke>
     const SubUnsubFunc m_unsubFunc;
     const int32_t m_partition;
 
-    const ActionNotificationFunc f_actionNotificationFunc;
-
     public:
     Downloading(const int32_t& partition,
         const SubUnsubFunc& subFunc,
-        const SubUnsubFunc& unsubFunc,
-        const ActionNotificationFunc& actionNotificationFunc) : 
+        const SubUnsubFunc& unsubFunc) : 
         State(false),
         m_partition(partition),
         m_subFunc(subFunc),
-        m_unsubFunc(unsubFunc),
-        f_actionNotificationFunc(actionNotificationFunc)
+        m_unsubFunc(unsubFunc)
     {}
 
     const std::optional<std::tuple<std::string,std::string>> getSubscriptionInfo(std::string& params)
@@ -105,17 +95,14 @@ IEventProcessor<Revoke>
     const int32_t m_partition;
     const SubUnsubFunc m_subFunc;
     const SubUnsubFunc m_unsubFunc;
-    const ActionNotificationFunc m_actionNotificationFunc;
 
     public:
     Operational(const int32_t& partition,
                 const SubUnsubFunc& subFunc,
-                const SubUnsubFunc& unsubFunc,
-                const ActionNotificationFunc& actionNotificationFunc) : 
+                const SubUnsubFunc& unsubFunc) : 
         State(false), m_partition(partition),
         m_subFunc(subFunc),
-        m_unsubFunc(unsubFunc),
-        m_actionNotificationFunc(actionNotificationFunc)
+        m_unsubFunc(unsubFunc)
     {}
 
     /********************************Event Handlers ****************************************************** */
@@ -127,9 +114,7 @@ IEventProcessor<Revoke>
         subscribe?
             m_subFunc(*instrument, *subscriptionType):
             m_unsubFunc(*instrument, *subscriptionType);
-
-        m_actionNotificationFunc(instrument, subscriptionType, subscribe);
-
+        
         return SpecialTransition::nullTransition;
     }
 
@@ -145,18 +130,16 @@ IEventProcessor<Assign>
 
     const SubUnsubFunc f_subFunc;
     const SubUnsubFunc f_unsubFunc;
-    const ActionNotificationFunc f_actionNotificationFunc;
     
     public:
     Revoked(int32_t partition,
             const SubUnsubFunc& subFunc,
-            const SubUnsubFunc& unsubFunc,
-            const ActionNotificationFunc& actionNotificationFunc) :
+            const SubUnsubFunc& unsubFunc) :
         State(false),
         m_partition(partition),
         f_subFunc(subFunc),
-        f_unsubFunc(unsubFunc),
-        f_actionNotificationFunc(actionNotificationFunc) {}
+        f_unsubFunc(unsubFunc)
+    {}
 
     /********************************Event Handlers ****************************************************** */
     
@@ -171,10 +154,9 @@ struct PerPartitionFSM : FSM<PerPartitionFSM>
 {
     PerPartitionFSM(const int32_t& partition,
         const SubUnsubFunc& subFunc,
-        const SubUnsubFunc& unsubFunc,
-        const ActionNotificationFunc& actionNotificationFunc) :
+        const SubUnsubFunc& unsubFunc) :
         FSM<PerPartitionFSM>([&]() {
-             return std::make_unique<Downloading>(partition, subFunc, unsubFunc, actionNotificationFunc); 
+             return std::make_unique<Downloading>(partition, subFunc, unsubFunc); 
         })
     {}
 };

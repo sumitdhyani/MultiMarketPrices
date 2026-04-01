@@ -154,20 +154,14 @@ class session : public std::enable_shared_from_this<session>
         
         std::string payload = beast::buffers_to_string(m_buffer.data());
         m_buffer.consume(bytes_transferred);
-        try
+        if (payload.find("@trade") != std::string::npos ||
+            payload.find("@depth") != std::string::npos)
         {
-            if (payload.find("@trade") != std::string::npos)
-            {
-                 std::cout << "Received trade message: " << payload << std::endl;
-            }
-            else if (payload.find("@depth") != std::string::npos)
-            {
-                std::cout << "Received depth message: " << payload << std::endl;
-            }
+            m_priceCallback(payload);
         }
-        catch (std::exception& ex)
+        else
         {
-            std::cerr << "Received message with unexpected format: " << ex.what() << std::endl;
+            // log error about invalid format
         }
 
         read();

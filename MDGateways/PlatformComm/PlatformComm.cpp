@@ -30,14 +30,16 @@ void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
         {
             auto newFsm =
             std::make_unique<PerPartitionFSM>(partition,
-                [](const std::string&, const std::string&){},
-                [](const std::string&, const std::string&){}
+                subFunc,
+                unsubFunc
             );
 
             static UUIDGenerator gen;
             const std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
 
-            requestFunc(gen.generate64(),
+            uint64_t reqId = gen.generate64();
+            std::cout << "Requesting for group info for group: " << group << " with reqId: " << reqId << std::endl;
+            requestFunc(reqId,
                         json::serialize(json::object{{
                             {*Tags::group_identifier(), group},
                             {*Tags::destination_topic(), appId}
@@ -105,7 +107,7 @@ void msgCb(const std::string& topic,
                             subType,
                             isSub);
 
-            std::string key = "(\'" + *instrument + "\', \'" + *subType + "\')";
+            std::string key = *instrument + "," + *subType;
             std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
             producerFunc(*Topic::pubSub_sync_data(),
                 MessageType::sync_data_update(),
@@ -145,32 +147,33 @@ void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
     std::error_code ec;
     json::object jsonObj = json::parse(msg, ec).as_object();
     if (ec) {
-        std::cerr << "Error parsing JSON: " << ec.message() << std::endl;
+        std::cout << "Error parsing JSON: " << ec.message() << std::endl;
+        return;
     } else {
         std::cout << "Parsed JSON content: " << json::serialize(jsonObj) << std::endl;
     }
 
+    std::cout << "Parsing group from json message";
     std::string group = jsonObj.at(*Tags::group_identifier()).as_string().c_str();
     auto const tokens = group
-                | std::views::split(',')
+                | std::views::split(':')
                 | std::ranges::to<std::vector<std::string>>();
     
     if (tokens.size() != 3)
     {
         // Log error
-        std::cerr << "Error: Invalid group identifier format" << std::endl;
+        std::cout << "Error: Invalid group identifier format" << std::endl;
         return;
     }
 
     int32_t partition = atoi((*tokens.rbegin()).c_str());
+    std::cout << "Parsed partition from group identifier: " << (*tokens.rbegin()).c_str() << std::endl;
 
     if (auto it = partitionFSMs.find(partition); 
         it != partitionFSMs.end())
     {
         auto& [_, existingFSM] = *it;
-        json::object obj = json::parse(msg).as_object();
-
-        isLast?
+        !isLast?
             existingFSM->handleEvent(SubscriptionRecord(jsonObj)) :
             existingFSM->handleEvent(DownloadEnd(jsonObj));
     }

@@ -120,7 +120,7 @@ bool handleResponse(const std::string& topic,
         }
         catch (const std::exception& e)
         {
-            errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Invalid reqId in response header: " + reqIdStr));
+            errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Invalid reqId in response header: " + reqIdStr + ", error: " + e.what()));
         }
     }
     else
@@ -450,7 +450,7 @@ void initializeMiddleWare(const std::string& appId,
     initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc, requestFunc);
 
 
-    if(individualConsumerFunc(appId, nullptr) != APIError::Ok) {
+    if(individualConsumerFunc(appId, std::nullopt) != APIError::Ok) {
         return errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unable to subscribe self topic"));
     }
     

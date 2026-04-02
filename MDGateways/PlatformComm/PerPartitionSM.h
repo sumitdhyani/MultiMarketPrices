@@ -5,6 +5,7 @@
 #include <iostream>
 #include <CPPFsm/FSM.hpp>
 #include "SMEvents.h"
+#include <iostream>
 
 using State = ULFSM::State;
 using SpecialTransition = ULFSM::Specialtransition;
@@ -15,7 +16,7 @@ using IEventProcessor = ULFSM::IEventProcessor<EvtTypes...>;
 
 template <typename Derived>
 using FSM = ULFSM::FSM<Derived>;
-using SubUnsubFunc = std::function<void(const std::string&, const std::string&)>;
+using SubUnsubFunc = std::function<void(const std::string&, const PriceType&)>;
 
 struct Downloading : State,
 IEventProcessor<SubscriptionRecord>,
@@ -41,11 +42,6 @@ IEventProcessor<Revoke>
     const std::optional<std::tuple<std::string,std::string>> getSubscriptionInfo(std::string& params)
     {
         std::optional<std::tuple<std::string,std::string>> res;
-        // At the moment, key is to be of the format "('<instrumentId>', '<SubscriptionType>')"
-        std::erase_if(params, [](const char c) {
-            return c == '\'' || c == '(' || c == ')' || c == ' ';
-        });
-
         auto tokens = params
                 | std::views::split(',')
                 | std::ranges::to<std::vector<std::string>>();
@@ -63,10 +59,15 @@ IEventProcessor<Revoke>
         auto const& dict = *subscription;
         std::string subscriptionKey = dict.at(*Tags::subscriptionKey()).as_string().c_str();
         auto params = std::move(getSubscriptionInfo(subscriptionKey));
-        if(params) {
-            auto& [instrument, subscriptionType] = *params;
-            m_subFunc(instrument.c_str(), subscriptionType.c_str());
-        }
+        if(!params) return SpecialTransition::nullTransition;
+
+        auto& [instrument, subscriptionType] = *params;
+        subscriptionType == *PriceType::trade()?
+            m_subFunc(instrument.c_str(), PriceType::trade()):
+        subscriptionType == *PriceType::depth()?
+            m_subFunc(instrument.c_str(), PriceType::depth()):
+        void();
+
         return SpecialTransition::nullTransition;
     }
 
@@ -111,10 +112,21 @@ IEventProcessor<Revoke>
                         const SubscriptionType& subscriptionType,
                         const bool& subscribe) override
     {
-        subscribe?
-            m_subFunc(*instrument, *subscriptionType):
-            m_unsubFunc(*instrument, *subscriptionType);
+        std::cout << "Operational State: Received sub/unsub event for instrument: " << *instrument 
+                << ", subscription type: " << *subscriptionType 
+                << ", action: " << (subscribe? "subscribe" : "unsubscribe") 
+                << std::endl;
         
+        *subscriptionType == *PriceType::trade()?
+            subscribe?
+                m_subFunc(*instrument, PriceType::trade()):
+                m_unsubFunc(*instrument, PriceType::trade()):
+        *subscriptionType == *PriceType::depth()?
+            subscribe?
+                m_subFunc(*instrument, PriceType::depth()):
+            m_unsubFunc(*instrument, PriceType::depth()):
+        void();
+
         return SpecialTransition::nullTransition;
     }
 

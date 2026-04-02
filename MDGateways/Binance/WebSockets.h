@@ -126,6 +126,7 @@ class session : public std::enable_shared_from_this<session>
     {
         if(ec) return fail(ec, "handshake");
         m_connected = true;
+        beast::get_lowest_layer(m_ws).expires_never();
         std::cout << "[Binance WS] on_handshake" << std::endl;
 
         for (auto const& symbol : m_tradeSubscriptions) subscribeTrade(symbol);
@@ -137,8 +138,6 @@ class session : public std::enable_shared_from_this<session>
 
     void read()
     {
-        beast::get_lowest_layer(m_ws).expires_after(std::chrono::seconds(hasSubscriptions()? 60 : 600));
-
         m_ws.async_read(m_buffer,
                         beast::bind_front_handler(&session::on_read, shared_from_this())
         );

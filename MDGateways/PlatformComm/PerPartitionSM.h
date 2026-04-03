@@ -4,8 +4,9 @@
 #include <tuple>
 #include <iostream>
 #include <CPPFsm/FSM.hpp>
-#include "SMEvents.h"
 #include <iostream>
+#include "PlatformComm.h"
+#include "SMEvents.h"
 
 using State = ULFSM::State;
 using SpecialTransition = ULFSM::Specialtransition;
@@ -16,17 +17,16 @@ using IEventProcessor = ULFSM::IEventProcessor<EvtTypes...>;
 
 template <typename Derived>
 using FSM = ULFSM::FSM<Derived>;
-using SubUnsubFunc = std::function<void(const std::string&, const PriceType&)>;
 
 struct Downloading : State,
 IEventProcessor<SubscriptionRecord>,
 IEventProcessor<DownloadEnd>,
-IEventProcessor<Instrument, SubscriptionType, bool>,
+IEventProcessor<SubUnsubKey, bool>,
 IEventProcessor<Revoke>
 {
     private:
     const SubUnsubFunc m_subFunc;
-    const SubUnsubFunc m_unsubFunc;
+    const SubUnsubFunc f_unsubFunc;
     const int32_t m_partition;
 
     public:
@@ -36,44 +36,20 @@ IEventProcessor<Revoke>
         State(false),
         m_partition(partition),
         m_subFunc(subFunc),
-        m_unsubFunc(unsubFunc)
+        f_unsubFunc(unsubFunc)
     {}
 
-    const std::optional<std::tuple<std::string,std::string>> getSubscriptionInfo(std::string& params)
-    {
-        std::optional<std::tuple<std::string,std::string>> res;
-        auto tokens = params
-                | std::views::split(',')
-                | std::ranges::to<std::vector<std::string>>();
-
-        if(tokens.size() == 2) {
-            res = std::make_tuple(tokens[0], tokens[1]);
-        }
-        return res;
-    }
-    
     /********************************Event Handlers ****************************************************** */
     
     Transition process(const SubscriptionRecord& subscription) override
     {
         auto const& dict = *subscription;
         std::string subscriptionKey = dict.at(*Tags::subscriptionKey()).as_string().c_str();
-        auto params = std::move(getSubscriptionInfo(subscriptionKey));
-        if(!params) return SpecialTransition::nullTransition;
-
-        auto& [instrument, subscriptionType] = *params;
-        subscriptionType == *PriceType::trade()?
-            m_subFunc(instrument.c_str(), PriceType::trade()):
-        subscriptionType == *PriceType::depth()?
-            m_subFunc(instrument.c_str(), PriceType::depth()):
-        void();
-
+        m_subFunc(SubUnsubKey(subscriptionKey));
         return SpecialTransition::nullTransition;
     }
 
-    Transition process(const Instrument& instrument,
-                        const SubscriptionType& subscriptionType,
-                        const bool& subscribe) override
+    Transition process(const SubUnsubKey& key, const bool& subscribe) override
     {
         return SpecialTransition::deferralTransition;
     };
@@ -89,7 +65,7 @@ IEventProcessor<Revoke>
 
 
 struct Operational : State,
-IEventProcessor<Instrument, SubscriptionType, bool>,
+IEventProcessor<SubUnsubKey, bool>,
 IEventProcessor<Revoke>
 {
     private:
@@ -108,24 +84,17 @@ IEventProcessor<Revoke>
 
     /********************************Event Handlers ****************************************************** */
 
-    Transition process(const Instrument& instrument, 
-                        const SubscriptionType& subscriptionType,
+    Transition process(const SubUnsubKey& key,
                         const bool& subscribe) override
     {
-        std::cout << "Operational State: Received sub/unsub event for instrument: " << *instrument 
-                << ", subscription type: " << *subscriptionType 
+        std::cout << "Operational State: Received sub/unsub event for key: " << *key 
                 << ", action: " << (subscribe? "subscribe" : "unsubscribe") 
                 << std::endl;
         
-        *subscriptionType == *PriceType::trade()?
-            subscribe?
-                m_subFunc(*instrument, PriceType::trade()):
-                m_unsubFunc(*instrument, PriceType::trade()):
-        *subscriptionType == *PriceType::depth()?
-            subscribe?
-                m_subFunc(*instrument, PriceType::depth()):
-            m_unsubFunc(*instrument, PriceType::depth()):
-        void();
+
+        subscribe?
+            m_subFunc(key):
+            m_unsubFunc(key);
 
         return SpecialTransition::nullTransition;
     }

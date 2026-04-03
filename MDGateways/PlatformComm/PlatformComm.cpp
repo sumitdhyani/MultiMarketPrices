@@ -1,14 +1,15 @@
 #include<unordered_set>
 #include<unordered_map>
 #include "PlatformComm.h"
+#include "PerPartitionSM.h"
 
 using Timer = ULMTTools::Timer;
 namespace json = boost::json;
 std::string appId;
 std::string appGroup;
 std::string inTopic;
-PubSubFunc subFunc;
-PubSubFunc unsubFunc;
+SubUnsubFunc subFunc;
+SubUnsubFunc unsubFunc;
 std::unordered_map<std::string, std::unordered_set<std::string>> symbolToDestTopics;
 std::unordered_map<std::string, std::unordered_set<std::string>> destTopicToSymbols;
 
@@ -112,22 +113,11 @@ bool handleBookKeepingForUnsubscription(const std::string& key, const std::strin
     }
 }
 
-bool handleBookKeeping(const Instrument& instrument,
-    const InstrumentType& instrumentType,
-    const SubscriptionType& subType,
-    const std::string& destTopic,
-    bool isSub)
+bool handleBookKeeping(const std::string& key, const std::string& destTopic, bool isSub)
 {
     // This function will handle all the bookkeeping related tasks like maintaining the symbol to destination topic mapping and vice versa
     // This will be called whenever there is a subscribe or unsubscribe event
     // The mapping will be used to route the price updates to the correct destination topics
-    const std::string& key = *instrument + ":" + *instrumentType;
-    return isSub ? handleBookKeepingForSubscription(key, destTopic) :
-                   handleBookKeepingForUnsubscription(key, destTopic);
-}
-
-bool handleBookKeeping(const std::string& key, const std::string& destTopic, bool isSub)
-{
     return isSub ? handleBookKeepingForSubscription(key, destTopic) :
                    handleBookKeepingForUnsubscription(key, destTopic);
 }
@@ -164,7 +154,7 @@ OptionType strToOptionType(const std::string& instrumentType)
     throw std::invalid_argument("Invalid option type: " + instrumentType);
 }
 
-std::optional<std::string> generateKey(json::object obj)
+std::optional<std::string> generateKey(const json::object& obj)
 {
     try
     {
@@ -202,43 +192,41 @@ void msgCb(const std::string& topic,
 {
     if (msgType == *MessageType::subscribe() ||
         msgType == *MessageType::unsubscribe())
-    {
-        if (auto it = partitionFSMs.find(partition); 
-            it != partitionFSMs.end())
+    {   
+        auto it = partitionFSMs.find(partition);
+        if (it == partitionFSMs.end()) return;
+
+        auto obj = json::parse(msg).as_object();
+        auto key = generateKey(obj);
+        if (!key)   return;
+
+        bool isSub = msgType == *MessageType::subscribe();
+        const std::string destTopic = obj.at(*Tags::destination_topic()).as_string().c_str();
+
+        if (!handleBookKeeping(*key, destTopic, isSub))
         {
-            bool isSub = msgType == *MessageType::subscribe();
-            auto obj = json::parse(msg).as_object();
-            auto key = generateKey(obj);
-            if (!key)   return;
-
-            const std::string destTopic = obj.at(*Tags::destination_topic()).as_string().c_str();
-            if (!handleBookKeeping(*key, destTopic, msgType == *MessageType::subscribe()))
-            {
-                std::cout << "Bookkeeping failed for key: " << *key << " and destTopic: " << destTopic << std::endl;
-                return;
-            }
-            auto& [_, existingFSM] = *it;
-            existingFSM->handleEvent(Instrument(""),
-                            SubscriptionType(""),
-                            isSub);
-            
-            std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
-            producerFunc(*Topic::pubSub_sync_data(),
-                MessageType::sync_data_update(),
-                appId,
-                json::serialize(json::object{
-                    {*Tags::group_identifier(), group},
-                    {*Tags::subscriptionKey(), *key},
-                    {*Tags::action(), isSub ?
-                        *TagValues::action_subscribe() :
-                        *TagValues::action_unsubscribe()},
-                    {*Tags::destination_topic(), destTopic}
-                }),
-                {},
-                sencCb
-            );
-
+            std::cout << "BookKeeping failed for key: " << *key << " and destTopic: " << destTopic << std::endl;
+            return;
         }
+        auto& [_, existingFSM] = *it;
+        existingFSM->handleEvent(SubUnsubKey(*key),
+                        isSub);
+        
+        std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
+        producerFunc(*Topic::pubSub_sync_data(),
+            MessageType::sync_data_update(),
+            appId,
+            json::serialize(json::object{
+                {*Tags::group_identifier(), group},
+                {*Tags::subscriptionKey(), *key},
+                {*Tags::action(), isSub ?
+                    *TagValues::action_subscribe() :
+                    *TagValues::action_unsubscribe()},
+                {*Tags::destination_topic(), destTopic}
+            }),
+            {},
+            sencCb
+        );
     }
 }
 
@@ -316,24 +304,42 @@ void runningErrorCb(const Middleware::Error& error) {
     }
 }
 
-void onPriceDataFromExchange(const std::string& symbol,
-                            const PriceType& priceType,
+std::optional<std::vector<std::string>> decodeKey(std::string key)
+{
+    auto tokens = key
+                | std::views::split(':')
+                | std::ranges::to<std::vector<std::string>>();
+    if (tokens.size() != 3) {
+        return std::nullopt;
+    }
+    return tokens;
+}
+
+void onPriceDataFromExchange(const std::string& key,
                             const std::string& update)
 {
+    auto const& keyComponents = decodeKey(key);
+    if (!keyComponents)    {
+        std::cout << "Invalid key format: " << key << std::endl;
+        return;
+    }
+
+    auto const& instrument = (*keyComponents)[0];
+    auto const& priceType = (*keyComponents)[1];
     producerFunc(*Topic::prices(),
                 priceType == PriceType::depth() ?
                     MessageType::depth_update() :
                     MessageType::trade_update(),
-                symbol,
-                update, 
+                key,
+                update,
                 {}, 
                 sencCb);
 }
 
 
 void PlatformComm::init(const std::string& brokers,
-            const PubSubFunc& subFunc,
-            const PubSubFunc& unsububFunc,
+            const SubUnsubFunc& subFunc,
+            const SubUnsubFunc& unsububFunc,
             const std::function<void(const DataFunc&)>& registrationFunc,
             const std::shared_ptr<ULMTTools::Timer> timer,
             const std::shared_ptr<ULMTTools::WorkerThread> workerThread,

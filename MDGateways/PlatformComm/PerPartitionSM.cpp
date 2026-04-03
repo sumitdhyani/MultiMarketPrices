@@ -4,7 +4,7 @@
 Transition Downloading::process(const DownloadEnd& downloadEnd) {
     return std::make_unique<Operational>(m_partition,
             m_subFunc,
-            m_unsubFunc);
+            f_unsubFunc);
 }
 
 Transition Operational::process(const Revoke&) {

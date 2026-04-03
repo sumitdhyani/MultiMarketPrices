@@ -1,5 +1,4 @@
-#include <PlatformComm/PlatformComm.h>
-#include "WebSockets.h"
+#include "Binance.h"
 
 DataFunc dataFunc;
 bool middlewareInitialized = false;
@@ -13,11 +12,9 @@ using Scheduler_SPtr = std::shared_ptr<Scheduler>;
 using Timer = ULMTTools::Timer;
 using Timer_SPtr = std::shared_ptr<Timer>;
 
-
-
 void initMiddleware(const std::string& brokers,
-        const PubSubFunc& subFunc,
-        const PubSubFunc& unsububFunc,
+        const SubUnsubFunc& subFunc,
+        const SubUnsubFunc& unsububFunc,
         const std::function<void(const DataFunc&)>& registrationFunc,
         const Timer_SPtr& timer,
         const Worker_SPtr& workerThread,
@@ -38,6 +35,38 @@ void initMiddleware(const std::string& brokers,
         initErrorCb);
 }
 
+bool addKey(json::object& update)
+{
+    try
+    {
+        const std::string priceType = update[*BinanceTag::priceType()].as_string().c_str();
+        auto const& binancePriceType = strToBinancePriceType(priceType);
+        if(!binancePriceType)
+        {
+            std::cout << "Innvalid priceType from exchange: " << priceType;
+            return false;
+        }
+
+        auto const& platformPriceType = binanceToPlatformPriceType(*binancePriceType);
+        if(!platformPriceType)
+        {
+            std::cout << "Unhandled binance pricetype: " << *(binancePriceType.value()) << std::endl;
+            return false;
+        }
+
+        std::string instrument = update[*BinanceTag::symbol()].as_string().c_str();
+        std::string key = instrument + *(platformPriceType.value());
+
+        update[*Tags::subscriptionKey()] = key;
+    }
+    catch (const std::exception& ex)
+    {
+        std::cout << "Problem while creating key from market update: " << ex.what() << std::endl;
+        return false;
+    }
+
+    return true;
+}
 
 bool transformForPlatform(json::object& update)
 {
@@ -50,6 +79,7 @@ bool transformForPlatform(json::object& update)
     update["symbol"] = update["s"].as_string();
     update["price"] = update["p"].as_string();
     update["quantity"] = update["q"].as_string();
+    update["key"] = 
     
     update.erase("s");
     update.erase("p");
@@ -59,25 +89,47 @@ bool transformForPlatform(json::object& update)
 
 
 void subscribe(const std::shared_ptr<session>& sess,
-    const std::string& symbol,
-    const PriceType& priceType)
+    const SubUnsubKey& key)
 {
-    std::string lowerSymbol = symbol;
-    std::transform(lowerSymbol.begin(), lowerSymbol.end(), lowerSymbol.begin(), ::tolower);
-    priceType == PriceType::trade() ?
-        sess->subscribeTrade(lowerSymbol) :
-        sess->subscribeDepth(lowerSymbol);
+    auto tokens = *key |
+                 std::views::split(' ') | 
+                 std::ranges::to<std::vector<std::string>>();
+
+    if (tokens.size() < 2)
+    {
+        std::cout<< "Invalid key format for key: " << *key << std::endl;
+    }
+
+
+    std::string& symbol = tokens[0];
+    if(auto priceType = strToPriceType(tokens[1]); priceType)
+    {
+        *priceType == PriceType::trade() ?
+            sess->subscribeTrade(symbol) :
+            sess->subscribeDepth(symbol);
+    }    
 }
 
 void unsubscribe(const std::shared_ptr<session>& sess,
-    const std::string& symbol,
-    const PriceType& priceType)
+    const SubUnsubKey& key)
 {
-    std::string lowerSymbol = symbol;
-    std::transform(lowerSymbol.begin(), lowerSymbol.end(), lowerSymbol.begin(), ::tolower);
-    priceType == PriceType::trade() ?
-        sess->unsubscribeTrade(lowerSymbol) :
-        sess->unsubscribeDepth(lowerSymbol);
+    auto tokens = *key |
+                 std::views::split(' ') | 
+                 std::ranges::to<std::vector<std::string>>();
+
+    if (tokens.size() < 2)
+    {
+        std::cout<< "Invalid key format for key: " << *key << std::endl;
+    }
+
+
+    std::string& symbol = tokens[0];
+    if(auto priceType = strToPriceType(tokens[1]); priceType)
+    {
+        *priceType == PriceType::trade() ?
+            sess->unsubscribeTrade(symbol) :
+            sess->unsubscribeDepth(symbol);
+    }    
 }
 
 void onGatewayConnected(const std::shared_ptr<session>& sess,
@@ -88,13 +140,13 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
     middlewareInitialized = true;
     
     initMiddleware("node_2:9092,node_3:9092",
-        [&sess](const std::string& symbol, const PriceType& priceType){
-            std::cout << "Subscribing to " << symbol << " with price type " << *priceType << std::endl;
-            subscribe(sess, symbol, priceType);
+        [&sess](const SubUnsubKey& key){
+            std::cout << "Subscribing to " << *key << std::endl;
+            subscribe(sess, key);
         },
-        [&sess](const std::string& symbol, const PriceType& priceType){
-            std::cout << "Unsubscribing from " << symbol << " with price type " << *priceType << std::endl;
-            unsubscribe(sess, symbol, priceType);
+        [&sess](const SubUnsubKey& key){
+            std::cout << "Unsubscribing from " << *key << std::endl;
+            unsubscribe(sess, key);
         },
         [](const DataFunc& dataFunc){
             // Registering the callback to receive price data from the exchange
@@ -110,6 +162,38 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
         });
 }
 
+
+std::optional<std::string> generateKeyFromMarketUpdate(const json::object& update)
+{
+    try
+    {
+        const std::string priceType = update.at(*BinanceTag::priceType()).as_string().c_str();
+        auto const& binancePriceType = strToBinancePriceType(priceType);
+        if(!binancePriceType)
+        {
+            std::cout << "Innvalid priceType from exchange: " << priceType;
+            return std::nullopt;
+        }
+
+        auto const& platformPriceType = binanceToPlatformPriceType(*binancePriceType);
+        if(!platformPriceType)
+        {
+            std::cout << "Unhandled binance pricetype: " << *(binancePriceType.value()) << std::endl;
+            return std::nullopt;
+        }
+
+        std::string instrument = update.at(*BinanceTag::symbol()).as_string().c_str();
+        std::string key = instrument + *(platformPriceType.value()) + *InstrumentType::spot();
+        return key;
+    }
+    catch (const std::exception& ex)
+    {
+        std::cout << "Problem while creating key from market update: " << ex.what() << std::endl;
+        return std::nullopt;
+    }
+}
+
+
 void onPriceUpdate(const std::string& update,
     const Worker_SPtr& appWorker)
 {
@@ -123,6 +207,13 @@ void onPriceUpdate(const std::string& update,
     
     obj = std::make_shared<json::object>(std::move((*obj)["data"].as_object()));
     
+    auto key = generateKeyFromMarketUpdate(*obj);
+    if(!key)
+    {
+        std::cout << "Unable to generate the key for this update: " << update << std::endl;
+        return;
+    }
+    
     if (!transformForPlatform(*obj)) 
     {
         std::cout << "Object transformation failed, update was: " << update << std::endl;
@@ -130,9 +221,9 @@ void onPriceUpdate(const std::string& update,
     }
 
     auto objStr = std::make_shared<std::string>(std::move(json::serialize(*obj)));
-    appWorker->push([obj, objStr](){
-        dataFunc(obj->at("symbol").as_string().c_str(),
-                obj->contains("bids") ? PriceType::depth() : PriceType::trade(),
+    auto keyPtr = std::make_shared<std::string>(std::move(*key));
+    appWorker->push([objStr, keyPtr](){
+        dataFunc(*keyPtr,
                 *objStr);
     });
 }

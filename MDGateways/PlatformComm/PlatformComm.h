@@ -1,5 +1,6 @@
 #pragma once
 #include <iostream>
+#include <string>
 #include <chrono>
 #include <optional>
 #include <ranges>
@@ -11,19 +12,25 @@
 #include <MiddleWare/Interface.h>
 #include <Constants.h>
 #include <UUIDGen.hpp>
-#include "PerPartitionSM.h"
+#include <TypeWrapper.h>
 
 namespace json = boost::json;
-using PubSubFunc = std::function<void(const std::string&, const PriceType&)>;
-using DataFunc = std::function<void(const std::string&,
-                                    const PriceType&,
-                                    const std::string&)>;
+
+// Fomat:
+// <instrumentId>:<priceType>:<InstrumentType>:<OptionType>
+// option type should only be there if instrument type is option
+struct SubUnsubKey : TypeWrapper<std::string> {};
+using SubUnsubFunc = std::function<void(const SubUnsubKey&)>;
+using DataFunc = std::function<void(const std::string&, // Key
+                                    const std::string&)>; // Update 
+
+
 
 namespace PlatformComm
 {
     void init(const std::string& brokers,
-            const PubSubFunc& subFunc,
-            const PubSubFunc& unsububFunc,
+            const SubUnsubFunc& subFunc,
+            const SubUnsubFunc& unsububFunc,
             const std::function<void(const DataFunc&)>& registrationFunc,
             const std::shared_ptr<ULMTTools::Timer> timer,
             const std::shared_ptr<ULMTTools::WorkerThread> workerThread,

@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <optional>
 #include "TypeWrapper.h"
 
 
@@ -516,3 +517,10 @@ enum class APIError
     SubscriptionFailed,
     InvalidInstrumentType
 };
+
+inline std::optional<PriceType> strToPriceType(const std::string& priceType)
+{
+    if (priceType == *TagValues::subscription_type_depth()) return PriceType::depth();
+    else if (priceType == *TagValues::subscription_type_trade()) return PriceType::trade();
+    else return std::nullopt;
+}

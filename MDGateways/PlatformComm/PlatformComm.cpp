@@ -1,3 +1,5 @@
+#include<unordered_set>
+#include<unordered_map>
 #include "PlatformComm.h"
 
 using Timer = ULMTTools::Timer;
@@ -7,6 +9,8 @@ std::string appGroup;
 std::string inTopic;
 PubSubFunc subFunc;
 PubSubFunc unsubFunc;
+std::unordered_map<std::string, std::unordered_set<std::string>> symbolToDestTopics;
+std::unordered_map<std::string, std::unordered_set<std::string>> destTopicToSymbols;
 
 std::unordered_map<int32_t, std::unique_ptr<PerPartitionFSM>> partitionFSMs;
 Middleware::ProducerFunc producerFunc;
@@ -82,6 +86,112 @@ std::string getHeartBeatMsg()
     }));
 }
 
+
+bool handleBookKeepingForSubscription(const std::string& key, const std::string& destTopic)
+{   
+    if (auto it = symbolToDestTopics.find(key); it == symbolToDestTopics.end())
+    {
+        symbolToDestTopics[key] = {destTopic};
+        return true;
+    }
+    else
+    {
+        return it->second.insert(destTopic).second;
+    }
+}
+
+bool handleBookKeepingForUnsubscription(const std::string& key, const std::string& destTopic)
+{   
+    if (auto it = symbolToDestTopics.find(key); it != symbolToDestTopics.end())
+    {
+        return it->second.erase(destTopic);
+    }
+    else
+    {
+        return false;
+    }
+}
+
+bool handleBookKeeping(const Instrument& instrument,
+    const InstrumentType& instrumentType,
+    const SubscriptionType& subType,
+    const std::string& destTopic,
+    bool isSub)
+{
+    // This function will handle all the bookkeeping related tasks like maintaining the symbol to destination topic mapping and vice versa
+    // This will be called whenever there is a subscribe or unsubscribe event
+    // The mapping will be used to route the price updates to the correct destination topics
+    const std::string& key = *instrument + ":" + *instrumentType;
+    return isSub ? handleBookKeepingForSubscription(key, destTopic) :
+                   handleBookKeepingForUnsubscription(key, destTopic);
+}
+
+bool handleBookKeeping(const std::string& key, const std::string& destTopic, bool isSub)
+{
+    return isSub ? handleBookKeepingForSubscription(key, destTopic) :
+                   handleBookKeepingForUnsubscription(key, destTopic);
+}
+
+InstrumentType strToInstrumentType(const std::string& instrumentType)
+{
+    if (instrumentType == *InstrumentType::spot())
+    {
+        return InstrumentType::spot();
+    }
+    else if (instrumentType == *InstrumentType::future())
+    {
+        return InstrumentType::future();
+    }
+    else if (instrumentType == *InstrumentType::option())
+    {
+        return InstrumentType::option();
+    }
+
+    throw std::invalid_argument("Invalid instrument type: " + instrumentType);
+}
+
+OptionType strToOptionType(const std::string& instrumentType)
+{
+    if (instrumentType == *OptionType::call())
+    {
+        return OptionType::call();
+    }
+    else if (instrumentType == *OptionType::put())
+    {
+        return OptionType::put();
+    }
+
+    throw std::invalid_argument("Invalid option type: " + instrumentType);
+}
+
+std::optional<std::string> generateKey(json::object obj)
+{
+    try
+    {
+        Instrument instrument(obj.at(*Tags::symbol()).as_string().c_str());
+        InstrumentType instrumentType = 
+        obj.contains(*InstrumentAttributes::instrument_type()) ?
+            strToInstrumentType(obj.at(*InstrumentAttributes::instrument_type()).as_string().c_str()) :
+            InstrumentType::spot();
+            
+        std::string key = *instrument + ":" +
+                            obj.at(*Tags::subscription_type()).as_string().c_str() + ":" +
+                            *instrumentType;
+        if(instrumentType == InstrumentType::option())
+        {
+            key += ":" + *strToOptionType(obj.at(*InstrumentAttributes::option_type()).as_string().c_str());
+        }
+        return key;
+    }
+    catch(const std::exception& e)
+    {
+        std::cout << "Error generating key: " << e.what() << std::endl;
+        return std::nullopt;
+    }
+
+}
+
+
 void msgCb(const std::string& topic,
     const int32_t& partition,
     const int64_t& offset,
@@ -96,25 +206,29 @@ void msgCb(const std::string& topic,
         if (auto it = partitionFSMs.find(partition); 
             it != partitionFSMs.end())
         {
-            json::object obj = json::parse(msg).as_object();
-            Instrument instrument(obj.at(*Tags::symbol()).as_string().c_str());
-            SubscriptionType subType(obj.at(*Tags::subscription_type()).as_string().c_str());
             bool isSub = msgType == *MessageType::subscribe();
-            std::string destTopic = obj.at(*Tags::destination_topic()).as_string().c_str();
+            auto obj = json::parse(msg).as_object();
+            auto key = generateKey(obj);
+            if (!key)   return;
 
+            const std::string destTopic = obj.at(*Tags::destination_topic()).as_string().c_str();
+            if (!handleBookKeeping(*key, destTopic, msgType == *MessageType::subscribe()))
+            {
+                std::cout << "Bookkeeping failed for key: " << *key << " and destTopic: " << destTopic << std::endl;
+                return;
+            }
             auto& [_, existingFSM] = *it;
-            existingFSM->handleEvent(instrument,
-                            subType,
+            existingFSM->handleEvent(Instrument(""),
+                            SubscriptionType(""),
                             isSub);
-
-            std::string key = *instrument + "," + *subType;
+            
             std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
             producerFunc(*Topic::pubSub_sync_data(),
                 MessageType::sync_data_update(),
                 appId,
                 json::serialize(json::object{
                     {*Tags::group_identifier(), group},
-                    {*Tags::subscriptionKey(), key},
+                    {*Tags::subscriptionKey(), *key},
                     {*Tags::action(), isSub ?
                         *TagValues::action_subscribe() :
                         *TagValues::action_unsubscribe()},

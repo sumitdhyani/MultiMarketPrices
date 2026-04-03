@@ -11,6 +11,9 @@ enum class MetaEnum
     TagValues,
     MiddlewareConfig,
     Topic,
+    InstrumentType,
+    InstrumentAttributes,
+    OptionType,
     PriceType
 };
 
@@ -184,6 +187,8 @@ struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
     }
 };
 
+
+
 struct PriceType : StringEnum<MetaEnum::PriceType, PriceType>
 {
     static PriceType const& depth()
@@ -199,6 +204,56 @@ struct PriceType : StringEnum<MetaEnum::PriceType, PriceType>
     }
 };
 
+struct InstrumentType : StringEnum<MetaEnum::InstrumentType, InstrumentType>
+{
+    static InstrumentType const& spot()
+    {
+        static InstrumentType instance{"spot"};
+        return instance;    
+    }
+
+    static InstrumentType const& future()
+    {
+        static InstrumentType instance{"future"};
+        return instance;    
+    }
+
+    static InstrumentType const& option()
+    {
+        static InstrumentType instance{"option"};
+        return instance;    
+    }
+};
+
+struct OptionType : StringEnum<MetaEnum::OptionType, OptionType>
+{
+    static OptionType const& call()
+    {
+        static OptionType instance{"call"};
+        return instance;    
+    }
+
+    static OptionType const& put()
+    {
+        static OptionType instance{"put"};
+        return instance;    
+    }
+};
+
+struct InstrumentAttributes : StringEnum<MetaEnum::InstrumentAttributes, InstrumentAttributes>
+{
+    static InstrumentAttributes const& instrument_type()
+    {
+        static InstrumentAttributes instance{"instrument_type"};
+        return instance;
+    }
+
+    static InstrumentAttributes const& option_type()
+    {
+        static InstrumentAttributes instance{"option_type"};
+        return instance;
+    }
+};
 
 struct Tags : StringEnum<MetaEnum::Tags, Tags>
 {
@@ -458,5 +513,6 @@ enum class APIError
     MsgTypeEmpty,
     KeyEmpty,
     PayloadEmpty,
-    SubscriptionFailed
+    SubscriptionFailed,
+    InvalidInstrumentType
 };

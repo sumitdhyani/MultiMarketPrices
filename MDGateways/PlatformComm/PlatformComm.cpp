@@ -97,20 +97,23 @@ bool handleBookKeepingForSubscription(const std::string& key, const std::string&
     }
     else
     {
-        return it->second.insert(destTopic).second;
+        auto& [_, destTopics] = *it;
+        return destTopics.insert(destTopic).second;
     }
 }
 
 bool handleBookKeepingForUnsubscription(const std::string& key, const std::string& destTopic)
 {   
-    if (auto it = symbolToDestTopics.find(key); it != symbolToDestTopics.end())
+    auto it = symbolToDestTopics.find(key);
+    if (it == symbolToDestTopics.end()) return false;
+ 
+    auto& [_, destTopics] = *it;
+    if(destTopics.erase(destTopic))
     {
-        return it->second.erase(destTopic);
+        if(destTopics.empty()) symbolToDestTopics.erase(it);
+        return true;
     }
-    else
-    {
-        return false;
-    }
+    return false;
 }
 
 bool handleBookKeeping(const std::string& key, const std::string& destTopic, bool isSub)
@@ -326,14 +329,25 @@ void onPriceDataFromExchange(const std::string& key,
 
     auto const& instrument = (*keyComponents)[0];
     auto const& priceType = (*keyComponents)[1];
-    producerFunc(*Topic::prices(),
-                priceType == PriceType::depth() ?
+
+    if (auto it = symbolToDestTopics.find(instrument); it != symbolToDestTopics.end())
+    {
+        for (auto const& destTopic : it->second)
+        {
+            producerFunc(destTopic,
+                priceType == *PriceType::depth() ?
                     MessageType::depth_update() :
                     MessageType::trade_update(),
                 key,
                 update,
                 {}, 
                 sencCb);
+        }
+    }
+    else
+    {
+        std::cout << "No destination topic found for instrument: " << instrument << std::endl;
+    }
 }
 
 

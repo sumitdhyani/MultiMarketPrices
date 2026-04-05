@@ -23,6 +23,7 @@ struct SubUnsubKey : TypeWrapper<std::string> {};
 using  KeyGenFunc = std::function<std::optional<SubUnsubKey>(const json::object&)>;
 using SubUnsubFunc = std::function<void(const SubUnsubKey&)>;
 using DataFunc = std::function<void(const std::string&, // Key
+                                    const PriceType&,
                                     const std::string&)>; // Update 
 
 

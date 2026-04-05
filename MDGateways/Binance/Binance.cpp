@@ -177,12 +177,12 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
         });
 }
 
-
-std::optional<std::string> generateKeyFromMarketUpdate(const json::object& update)
+std::optional<PriceType> generatePlatfromPriceTypeFromMarketUpdate(const json::object& update)
 {
     try
     {
         const std::string priceType = update.at(*BinanceTag::priceType()).as_string().c_str();
+        
         auto const& binancePriceType = strToBinancePriceType(priceType);
         if(!binancePriceType)
         {
@@ -190,15 +190,21 @@ std::optional<std::string> generateKeyFromMarketUpdate(const json::object& updat
             return std::nullopt;
         }
 
-        auto const& platformPriceType = binanceToPlatformPriceType(*binancePriceType);
-        if(!platformPriceType)
-        {
-            std::cout << "Unhandled binance pricetype: " << *(binancePriceType.value()) << std::endl;
-            return std::nullopt;
-        }
+        return binanceToPlatformPriceType(*binancePriceType);
+    }
+    catch (const std::exception& ex)
+    {
+        std::cout << "Problem while creating key from market update: " << ex.what() << std::endl;
+        return std::nullopt;
+    }
+}
 
+std::optional<std::string> generateKeyFromMarketUpdate(const PriceType& priceType, const json::object& update)
+{
+    try
+    {
         std::string instrument = update.at(*BinanceTag::symbol()).as_string().c_str();
-        std::string key = instrument + *(platformPriceType.value()) + *InstrumentType::spot();
+        std::string key = instrument + ":" + *priceType;
         return key;
     }
     catch (const std::exception& ex)
@@ -208,37 +214,43 @@ std::optional<std::string> generateKeyFromMarketUpdate(const json::object& updat
     }
 }
 
-
 void onPriceUpdate(const std::string& update,
     const Worker_SPtr& appWorker)
 {
-    auto obj = std::make_shared<json::object>(std::move(json::parse(update).as_object()));
+    auto obj = json::parse(update).as_object();
     
-    if(!obj->contains("data"))
+    if(!obj.contains("data"))
     {
         std::cout << "data tag missing" << std::endl;
         return;
     }
     
-    obj = std::make_shared<json::object>(std::move((*obj)["data"].as_object()));
-    
-    auto key = generateKeyFromMarketUpdate(*obj);
+    obj = std::move(obj["data"].as_object());
+    auto priceType = generatePlatfromPriceTypeFromMarketUpdate(obj);
+    if(!priceType)
+    {
+        std::cout << "Unable to generate the key for this update: " << update << std::endl;
+        return;
+    }
+
+    auto key = generateKeyFromMarketUpdate(*priceType, obj);
     if(!key)
     {
         std::cout << "Unable to generate the key for this update: " << update << std::endl;
         return;
     }
     
-    if (!transformForPlatform(*obj)) 
+    if (!transformForPlatform(obj)) 
     {
         std::cout << "Object transformation failed, update was: " << update << std::endl;
         return;
     }
 
-    auto objStr = std::make_shared<std::string>(std::move(json::serialize(*obj)));
+    auto objStr = std::make_shared<std::string>(std::move(json::serialize(obj)));
     auto keyPtr = std::make_shared<std::string>(std::move(*key));
-    appWorker->push([objStr, keyPtr](){
+    appWorker->push([objStr, keyPtr, priceType](){
         dataFunc(*keyPtr,
+                *priceType,
                 *objStr);
     });
 }

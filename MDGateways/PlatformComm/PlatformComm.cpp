@@ -309,34 +309,16 @@ void runningErrorCb(const Middleware::Error& error) {
     }
 }
 
-std::optional<std::vector<std::string>> decodeKey(std::string key)
-{
-    auto tokens = key
-                | std::views::split(':')
-                | std::ranges::to<std::vector<std::string>>();
-    if (tokens.size() != 3) {
-        return std::nullopt;
-    }
-    return tokens;
-}
-
 void onPriceDataFromExchange(const std::string& key,
+                            const PriceType& priceType,
                             const std::string& update)
 {
-    auto const& keyComponents = decodeKey(key);
-    if (!keyComponents)    {
-        std::cout << "Invalid key format: " << key << std::endl;
-        return;
-    }
-
-    auto const& priceType = (*keyComponents)[1];
-
     if (auto it = symbolToDestTopics.find(key); it != symbolToDestTopics.end())
     {
         for (auto const& destTopic : it->second)
         {
             producerFunc(destTopic,
-                priceType == *PriceType::depth() ?
+                priceType == *priceType ?
                     MessageType::depth_update() :
                     MessageType::trade_update(),
                 key,

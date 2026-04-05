@@ -201,17 +201,18 @@ void msgCb(const std::string& topic,
         if (it == partitionFSMs.end()) return;
 
         auto obj = json::parse(msg).as_object();
-        auto key = generateKey(obj);
+        auto key = keyGenFunc(obj);
         if (!key)   return;
 
         bool isSub = msgType == *MessageType::subscribe();
         const std::string destTopic = obj.at(*Tags::destination_topic()).as_string().c_str();
 
-        if (!handleBookKeeping(*key, destTopic, isSub))
+        if (!handleBookKeeping(*(key.value()), destTopic, isSub))
         {
-            std::cout << "BookKeeping failed for key: " << *key << " and destTopic: " << destTopic << std::endl;
+            std::cout << "BookKeeping failed for key: " << *(key.value()) << " and destTopic: " << destTopic << std::endl;
             return;
         }
+        
         auto& [_, existingFSM] = *it;
         existingFSM->handleEvent(SubUnsubKey(*key),
                         isSub);
@@ -222,7 +223,7 @@ void msgCb(const std::string& topic,
             appId,
             json::serialize(json::object{
                 {*Tags::group_identifier(), group},
-                {*Tags::subscriptionKey(), *key},
+                {*Tags::subscriptionKey(), *(key.value())},
                 {*Tags::action(), isSub ?
                     *TagValues::action_subscribe() :
                     *TagValues::action_unsubscribe()},
@@ -328,10 +329,9 @@ void onPriceDataFromExchange(const std::string& key,
         return;
     }
 
-    auto const& instrument = (*keyComponents)[0];
     auto const& priceType = (*keyComponents)[1];
 
-    if (auto it = symbolToDestTopics.find(instrument); it != symbolToDestTopics.end())
+    if (auto it = symbolToDestTopics.find(key); it != symbolToDestTopics.end())
     {
         for (auto const& destTopic : it->second)
         {
@@ -347,7 +347,7 @@ void onPriceDataFromExchange(const std::string& key,
     }
     else
     {
-        std::cout << "No destination topic found for instrument: " << instrument << std::endl;
+        std::cout << "No destination topic found for key: " << key << std::endl;
     }
 }
 

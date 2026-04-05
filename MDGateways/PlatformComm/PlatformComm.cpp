@@ -353,7 +353,14 @@ void PlatformComm::init(const std::string& brokers,
     ::unsubFunc = unsubFunc;
     ::keyGenFunc = keyGenFunc;
     
-    registrationFunc(onPriceDataFromExchange);
+    registrationFunc(
+        [workerThread](const std::string& key, const PriceType& priceType, const std::string& update )
+        {
+            workerThread->push([key, priceType, update](){
+                onPriceDataFromExchange(key, priceType, update);
+            });
+        }
+    );
     
     auto initCb =
     [](const Middleware::ProducerFunc& producerFunc,

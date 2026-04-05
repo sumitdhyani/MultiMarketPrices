@@ -214,8 +214,7 @@ std::optional<std::string> generateKeyFromMarketUpdate(const PriceType& priceTyp
     }
 }
 
-void onPriceUpdate(const std::string& update,
-    const Worker_SPtr& appWorker)
+void onPriceUpdate(const std::string& update)
 {
     auto obj = json::parse(update).as_object();
     
@@ -248,11 +247,10 @@ void onPriceUpdate(const std::string& update,
 
     auto objStr = std::make_shared<std::string>(std::move(json::serialize(obj)));
     auto keyPtr = std::make_shared<std::string>(std::move(*key));
-    appWorker->push([objStr, keyPtr, priceType](){
-        dataFunc(*keyPtr,
-                *priceType,
-                *objStr);
-    });
+    
+    dataFunc(*keyPtr,
+            *priceType,
+            *objStr);
 }
 int main(int argc, char** argv)
 {
@@ -269,17 +267,17 @@ int main(int argc, char** argv)
     // Launch the asynchronous operation
     std::shared_ptr<session> sess = std::make_shared<session>(ioc,
         ctx, 
-        [workerThread](const std::string& update) {
-            onPriceUpdate(update, workerThread);
-        },
+        onPriceUpdate,
         host,
         port,
         path,
         10,
         [](const beast::error_code& ec, bool isFatal){},
-        [&sess, timer, workerThread](){
-            std::thread([&sess, timer, workerThread](){
-                onGatewayConnected(sess, timer, workerThread);
+        [&sess](){
+            std::thread([&sess](){
+                onGatewayConnected(sess,
+                                    std::make_shared<Timer>(std::make_shared<Scheduler>()),
+                                    std::make_shared<Worker>());
             }).detach();
         }
     );

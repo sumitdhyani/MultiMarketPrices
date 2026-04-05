@@ -147,6 +147,7 @@ void unsubscribe(const std::shared_ptr<session>& sess,
 }
 
 void onGatewayConnected(const std::shared_ptr<session>& sess,
+    net::strand<net::io_context::executor_type>& strand,
     const Timer_SPtr& timer,
     const Worker_SPtr& workerThread)
 {
@@ -154,13 +155,18 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
     middlewareInitialized = true;
     
     initMiddleware("node_2:9092,node_3:9092",
-        [&sess](const std::string& key){
-            std::cout << "Subscribing to " << key << std::endl;
-            subscribe(sess, key);
+        [&sess, &strand]
+        (const std::string& key){
+            net::post(strand, [&sess, key](){
+                std::cout << "Subscribing to " << key << std::endl;
+                subscribe(sess, key);
+            });  
         },
-        [&sess](const std::string& key){
-            std::cout << "Unsubscribing from " << key << std::endl;
-            unsubscribe(sess, key);
+        [&sess, &strand](const std::string& key){
+            net::post(strand, [&sess, key](){
+                    std::cout << "Unsubscribing from " << key << std::endl;
+                    unsubscribe(sess, key);
+            });
         },
         generateKeyFromSubUnsubRequest,
         [](const DataFunc& dataFunc){
@@ -263,9 +269,10 @@ int main(int argc, char** argv)
 
     net::io_context ioc;
     ssl::context ctx{ssl::context::tlsv12_client};
+    net::strand<net::io_context::executor_type> strand{ioc.get_executor()};
 
     // Launch the asynchronous operation
-    std::shared_ptr<session> sess = std::make_shared<session>(ioc,
+    std::shared_ptr<session> sess = std::make_shared<session>(strand,
         ctx, 
         onPriceUpdate,
         host,
@@ -273,14 +280,16 @@ int main(int argc, char** argv)
         path,
         10,
         [](const beast::error_code& ec, bool isFatal){},
-        [&sess](){
-            std::thread([&sess](){
+        [&sess, &strand](){
+            std::thread([&sess, &strand](){
                 onGatewayConnected(sess,
-                                    std::make_shared<Timer>(std::make_shared<Scheduler>()),
-                                    std::make_shared<Worker>());
+                    strand,
+                    std::make_shared<Timer>(std::make_shared<Scheduler>()),    
+                    std::make_shared<Worker>());
             }).detach();
         }
     );
+
 
     sess->run();
     ioc.run();

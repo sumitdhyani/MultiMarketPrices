@@ -228,7 +228,7 @@ class session : public std::enable_shared_from_this<session>
 public:
     // Resolver and socket require an io_context
     explicit
-    session(net::io_context& ioc, 
+    session(net::strand<net::io_context::executor_type>& strand, 
         ssl::context& ctx,
         const PriceCallback& priceCallback,
         const std::string& host,
@@ -237,8 +237,8 @@ public:
         const uint32_t& retryDelay_sec,
         const ErrCallback& errCallback,
         const ReadyCallback& readyCallback)
-        : m_resolver(net::make_strand(ioc))
-        , m_ws(net::make_strand(ioc), ctx)
+        : m_resolver(strand)
+        , m_ws(strand, ctx)
         , m_priceCallback(priceCallback)
         , m_inFlight(false)
         , m_connected(false)

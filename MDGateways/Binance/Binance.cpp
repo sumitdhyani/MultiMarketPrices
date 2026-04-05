@@ -88,14 +88,14 @@ bool transformForPlatform(json::object& update)
     return true;
 }
 
-std::optional<SubUnsubKey> generateKeyFromSubUnsubRequest(const json::object& subUnsubRequest)
+std::optional<std::string> generateKeyFromSubUnsubRequest(const json::object& subUnsubRequest)
 {
     try{
         const std::string key = 
             std::string(subUnsubRequest.at(*Tags::symbol()).as_string().c_str()) +=
             std::string(":") +=
             subUnsubRequest.at(*Tags::subscription_type()).as_string();
-        return SubUnsubKey(key);
+        return key;
     }catch(const std::exception& ex) {
         std::cout << "Exception while generatig key from subscription request, details: " << ex.what() << std::endl;
         return std::nullopt;

@@ -207,9 +207,9 @@ void msgCb(const std::string& topic,
         bool isSub = msgType == *MessageType::subscribe();
         const std::string destTopic = obj.at(*Tags::destination_topic()).as_string().c_str();
 
-        if (!handleBookKeeping(*(key.value()), destTopic, isSub))
+        if (!handleBookKeeping(*key, destTopic, isSub))
         {
-            std::cout << "BookKeeping failed for key: " << *(key.value()) << " and destTopic: " << destTopic << std::endl;
+            std::cout << "BookKeeping failed for key: " << *key << " and destTopic: " << destTopic << std::endl;
             return;
         }
         
@@ -223,7 +223,7 @@ void msgCb(const std::string& topic,
             appId,
             json::serialize(json::object{
                 {*Tags::group_identifier(), group},
-                {*Tags::subscriptionKey(), *(key.value())},
+                {*Tags::subscriptionKey(), *key},
                 {*Tags::action(), isSub ?
                     *TagValues::action_subscribe() :
                     *TagValues::action_unsubscribe()},

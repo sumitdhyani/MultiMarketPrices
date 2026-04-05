@@ -20,7 +20,7 @@ namespace json = boost::json;
 // <instrumentId>:<priceType>:<InstrumentType>:<OptionType>
 // option type should only be there if instrument type is option
 struct SubUnsubKey : TypeWrapper<std::string> {};
-using  KeyGenFunc = std::function<std::optional<SubUnsubKey>(const json::object&)>;
+using  KeyGenFunc = std::function<std::optional<std::string>(const json::object&)>;
 using SubUnsubFunc = std::function<void(const std::string&)>;
 using DataFunc = std::function<void(const std::string&, // Key
                                     const PriceType&,

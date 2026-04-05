@@ -103,15 +103,15 @@ std::optional<SubUnsubKey> generateKeyFromSubUnsubRequest(const json::object& su
 }
 
 void subscribe(const std::shared_ptr<session>& sess,
-    const SubUnsubKey& key)
+    const std::string& key)
 {
-    auto tokens = *key |
+    auto tokens = key |
                  std::views::split(' ') | 
                  std::ranges::to<std::vector<std::string>>();
 
     if (tokens.size() < 2)
     {
-        std::cout<< "Invalid key format for key: " << *key << std::endl;
+        std::cout<< "Invalid key format for key: " << key << std::endl;
     }
 
 
@@ -125,15 +125,15 @@ void subscribe(const std::shared_ptr<session>& sess,
 }
 
 void unsubscribe(const std::shared_ptr<session>& sess,
-    const SubUnsubKey& key)
+    const std::string& key)
 {
-    auto tokens = *key |
+    auto tokens = key |
                  std::views::split(' ') | 
                  std::ranges::to<std::vector<std::string>>();
 
     if (tokens.size() < 2)
     {
-        std::cout<< "Invalid key format for key: " << *key << std::endl;
+        std::cout<< "Invalid key format for key: " << key << std::endl;
     }
 
 
@@ -154,12 +154,12 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
     middlewareInitialized = true;
     
     initMiddleware("node_2:9092,node_3:9092",
-        [&sess](const SubUnsubKey& key){
-            std::cout << "Subscribing to " << *key << std::endl;
+        [&sess](const std::string& key){
+            std::cout << "Subscribing to " << key << std::endl;
             subscribe(sess, key);
         },
-        [&sess](const SubUnsubKey& key){
-            std::cout << "Unsubscribing from " << *key << std::endl;
+        [&sess](const std::string& key){
+            std::cout << "Unsubscribing from " << key << std::endl;
             unsubscribe(sess, key);
         },
         generateKeyFromSubUnsubRequest,

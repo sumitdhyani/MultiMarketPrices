@@ -45,7 +45,7 @@ IEventProcessor<Revoke>
     {
         auto const& dict = *subscription;
         std::string subscriptionKey = dict.at(*Tags::subscriptionKey()).as_string().c_str();
-        m_subFunc(SubUnsubKey(subscriptionKey));
+        m_subFunc(subscriptionKey);
         return SpecialTransition::nullTransition;
     }
 
@@ -93,8 +93,8 @@ IEventProcessor<Revoke>
         
 
         subscribe?
-            m_subFunc(key):
-            m_unsubFunc(key);
+            m_subFunc(*key):
+            m_unsubFunc(*key);
 
         return SpecialTransition::nullTransition;
     }

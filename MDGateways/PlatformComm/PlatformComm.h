@@ -20,6 +20,7 @@ namespace json = boost::json;
 // <instrumentId>:<priceType>:<InstrumentType>:<OptionType>
 // option type should only be there if instrument type is option
 struct SubUnsubKey : TypeWrapper<std::string> {};
+using  KeyGenFunc = std::function<std::optional<SubUnsubKey>(const json::object&)>;
 using SubUnsubFunc = std::function<void(const SubUnsubKey&)>;
 using DataFunc = std::function<void(const std::string&, // Key
                                     const std::string&)>; // Update 
@@ -31,6 +32,7 @@ namespace PlatformComm
     void init(const std::string& brokers,
             const SubUnsubFunc& subFunc,
             const SubUnsubFunc& unsububFunc,
+            const KeyGenFunc& keyGenFunc,
             const std::function<void(const DataFunc&)>& registrationFunc,
             const std::shared_ptr<ULMTTools::Timer> timer,
             const std::shared_ptr<ULMTTools::WorkerThread> workerThread,

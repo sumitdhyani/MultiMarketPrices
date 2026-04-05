@@ -10,6 +10,7 @@ std::string appGroup;
 std::string inTopic;
 SubUnsubFunc subFunc;
 SubUnsubFunc unsubFunc;
+KeyGenFunc keyGenFunc;
 std::unordered_map<std::string, std::unordered_set<std::string>> symbolToDestTopics;
 std::unordered_map<std::string, std::unordered_set<std::string>> destTopicToSymbols;
 
@@ -354,6 +355,7 @@ void onPriceDataFromExchange(const std::string& key,
 void PlatformComm::init(const std::string& brokers,
             const SubUnsubFunc& subFunc,
             const SubUnsubFunc& unsububFunc,
+            const KeyGenFunc& keyGenFunc,
             const std::function<void(const DataFunc&)>& registrationFunc,
             const std::shared_ptr<ULMTTools::Timer> timer,
             const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
@@ -367,6 +369,7 @@ void PlatformComm::init(const std::string& brokers,
     ::inTopic = inTopic;
     ::subFunc = subFunc;
     ::unsubFunc = unsubFunc;
+    ::keyGenFunc = keyGenFunc;
     
     registrationFunc(onPriceDataFromExchange);
     

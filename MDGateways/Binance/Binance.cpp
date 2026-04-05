@@ -15,6 +15,7 @@ using Timer_SPtr = std::shared_ptr<Timer>;
 void initMiddleware(const std::string& brokers,
         const SubUnsubFunc& subFunc,
         const SubUnsubFunc& unsububFunc,
+        const KeyGenFunc& keyGenFunc,
         const std::function<void(const DataFunc&)>& registrationFunc,
         const Timer_SPtr& timer,
         const Worker_SPtr& workerThread,
@@ -26,6 +27,7 @@ void initMiddleware(const std::string& brokers,
     PlatformComm::init(brokers,
         subFunc,
         unsububFunc,
+        keyGenFunc,
         registrationFunc,
         timer,
         workerThread,
@@ -79,7 +81,6 @@ bool transformForPlatform(json::object& update)
     update["symbol"] = update["s"].as_string();
     update["price"] = update["p"].as_string();
     update["quantity"] = update["q"].as_string();
-    update["key"] = 
     
     update.erase("s");
     update.erase("p");
@@ -87,6 +88,19 @@ bool transformForPlatform(json::object& update)
     return true;
 }
 
+std::optional<SubUnsubKey> generateKeyFromSubUnsubRequest(const json::object& subUnsubRequest)
+{
+    try{
+        const std::string key = 
+            std::string(subUnsubRequest.at(*Tags::symbol()).as_string().c_str()) +=
+            std::string(":") +=
+            subUnsubRequest.at(*Tags::subscription_type()).as_string();
+        return SubUnsubKey(key);
+    }catch(const std::exception& ex) {
+        std::cout << "Exception while generatig key from subscription request, details: " << ex.what() << std::endl;
+        return std::nullopt;
+    }
+}
 
 void subscribe(const std::shared_ptr<session>& sess,
     const SubUnsubKey& key)
@@ -148,6 +162,7 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
             std::cout << "Unsubscribing from " << *key << std::endl;
             unsubscribe(sess, key);
         },
+        generateKeyFromSubUnsubRequest,
         [](const DataFunc& dataFunc){
             // Registering the callback to receive price data from the exchange
             ::dataFunc = dataFunc;

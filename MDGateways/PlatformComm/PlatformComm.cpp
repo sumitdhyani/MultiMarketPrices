@@ -336,7 +336,7 @@ void onPriceDataFromExchange(const std::string& key,
 
 void PlatformComm::init(const std::string& brokers,
             const SubUnsubFunc& subFunc,
-            const SubUnsubFunc& unsububFunc,
+            const SubUnsubFunc& unsubFunc,
             const KeyGenFunc& keyGenFunc,
             const std::function<void(const DataFunc&)>& registrationFunc,
             const std::shared_ptr<ULMTTools::Timer> timer,
@@ -367,7 +367,8 @@ void PlatformComm::init(const std::string& brokers,
             const Middleware::LowLevelProducerFunc& lowLevelProducerFunc,
             const Middleware::ConsumerFunc& groupConsumerFunc,
             const Middleware::ConsumerFunc& individualConsumerFunc,
-            const Middleware::RequestFunc& requestFunc)
+            const Middleware::RequestFunc& requestFunc,
+        const Middleware::RespondFunc& respondFunc)
     {
         ::producerFunc = producerFunc;
         ::requestFunc = requestFunc;
@@ -391,6 +392,7 @@ void PlatformComm::init(const std::string& brokers,
         initErrorCb,
         { {MiddlewareConfig::bootstrap_servers(), brokers} },
         { {MiddlewareConfig::bootstrap_servers(), brokers} },
-        responseCb
+        responseCb,
+        [](const uint64_t&, const std::string&){ std::cout << "Received request without a handler" << std::endl; }
     );
 }

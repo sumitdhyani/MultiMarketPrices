@@ -106,7 +106,7 @@ void subscribe(const std::shared_ptr<session>& sess,
     const std::string& key)
 {
     auto tokens = key |
-                 std::views::split(' ') | 
+                 std::views::split(':') | 
                  std::ranges::to<std::vector<std::string>>();
 
     if (tokens.size() < 2)
@@ -116,6 +116,7 @@ void subscribe(const std::shared_ptr<session>& sess,
 
 
     std::string& symbol = tokens[0];
+    std::transform(symbol.begin(), symbol.end(), symbol.begin(), ::tolower);
     if(auto priceType = strToPriceType(tokens[1]); priceType)
     {
         *priceType == PriceType::trade() ?
@@ -128,7 +129,7 @@ void unsubscribe(const std::shared_ptr<session>& sess,
     const std::string& key)
 {
     auto tokens = key |
-                 std::views::split(' ') | 
+                 std::views::split(':') | 
                  std::ranges::to<std::vector<std::string>>();
 
     if (tokens.size() < 2)
@@ -138,6 +139,7 @@ void unsubscribe(const std::shared_ptr<session>& sess,
 
 
     std::string& symbol = tokens[0];
+    std::transform(symbol.begin(), symbol.end(), symbol.begin(), ::tolower);
     if(auto priceType = strToPriceType(tokens[1]); priceType)
     {
         *priceType == PriceType::trade() ?
@@ -154,7 +156,7 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
     if (middlewareInitialized) return;
     middlewareInitialized = true;
     
-    initMiddleware("node_2:9092,node_3:9092",
+    initMiddleware("127.0.0.1:9092",
         [&sess, &strand]
         (const std::string& key){
             net::post(strand, [&sess, key](){
@@ -175,8 +177,8 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
         },
         timer,
         workerThread,
-        "binance_price_fetcher_node_4",
-        "binance_price_fetcher_4",
+        "binance_price_fetcher_node_6",
+        "binance_price_fetcher_6",
         "test_topic",
         [](const Middleware::Error& error){
             std::cerr << "Error initializing middleware: " << error.message() << "\n";

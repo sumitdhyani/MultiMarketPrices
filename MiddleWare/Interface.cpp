@@ -24,6 +24,9 @@ using TopicPartition        = kafka::TopicPartition;
 // set<TopicPartition>
 using TopicPartitions       = kafka::TopicPartitions;
 
+// key reqId, value destination topic
+using PendingRequestBook = std::unordered_map<uint64_t, std::string>;
+using PendingRequestBook_SPtr = std::shared_ptr<PendingRequestBook>;
 
 namespace Middleware
 {
@@ -131,6 +134,100 @@ bool handleResponse(const std::string& topic,
     return true;
 }
 
+
+bool handleRequest(const std::string& topic,
+    const int32_t& partition,
+    const int64_t& offset,
+    const std::string& msgType,
+    const std::string& key,
+    const Middleware::KeyValuePairs& headers,
+    const std::string& msg,
+    const RequestHandlerFunc& requestHandlerFunc,
+    const ErrCallback& errCallback,
+    const PendingRequestBook_SPtr& pendingRequestBook)
+{
+    if (msgType != *MessageType::request())
+    {
+        return false;
+    }
+
+    auto it = headers.find(HeaderKey::reqId());
+    if (it == headers.end())
+    {
+        errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Missing reqId in request header"));
+        return true;
+    }
+
+    auto const& [_, reqIdStr] = *it;
+    uint64_t reqId = 0;
+    try
+    {
+        reqId = std::stoull(reqIdStr);
+    }
+    catch (const std::exception& e)
+    {
+        errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Invalid reqId in request header: " + reqIdStr + ", error: " + e.what()));
+        return true;
+    }
+
+    if (auto it = pendingRequestBook->find(reqId);
+        it != pendingRequestBook->end())
+    {
+        errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Duplicate reqId in request header: " + reqIdStr));
+        return true;
+    }
+
+    it = headers.find(HeaderKey::destTopic());
+    if (it == headers.end())
+    {
+        errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Missing destTopic in request header"));
+        return true;
+    }    
+    else
+    {
+        auto const & [_, destTopic] = *it;
+        pendingRequestBook->emplace(reqId, destTopic);
+    } 
+
+    requestHandlerFunc(reqId, msg);
+    return true;
+}
+
+APIError respond(const uint64_t& reqId,
+    const std::string& respPayload,
+    bool isLast,
+    const SendCallback& sendCallback,
+    const PendingRequestBook_SPtr& pendingRequestBook,
+    const ProducerFunc& producerFunc,
+    const ErrCallback& errCallback)
+{
+    if (auto it = pendingRequestBook->find(reqId);
+        it == pendingRequestBook->end())
+    {
+        errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unknown reqId: " + std::to_string(reqId)));
+        return APIError::NonExistentReqId;
+    }
+    else
+    {
+        auto const& [_, destTopic] = *it;
+        producerFunc(destTopic, 
+                    MessageType::response(),
+                    "Null",
+                    respPayload,
+                    {{HeaderKey::respId(), std::to_string(reqId)},
+                     {HeaderKey::isLast(), isLast ? "1" : "0"}},
+                    sendCallback);
+        if (isLast) pendingRequestBook->erase(it);
+    }
+
+    // Implementation of respond function which sends the response back to the requester
+    // It should look up the pendingRequestBook to find the destination topic for the given reqId
+    // Then it should produce a message to that topic with the given payload and isLast flag in headers
+    // Finally, it should call the sendCallback with appropriate RecordMetadata and Error
+
+    return APIError::Ok;
+}
+
 void internalSendCallback(const RecordMetadata& rm, const Error& e)
 {
 
@@ -153,7 +250,8 @@ bool validateInitParams(const std::string& appId,
     const ErrCallback& errCallback,
     const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
     const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
-    const ResponseCallback& responseCallback)
+    const ResponseCallback& responseCallback,
+    const RequestHandlerFunc& requestHandlerFunc)
 {
     Error error = Error(RD_KAFKA_RESP_ERR_NO_ERROR, "");
     bool ret = false;
@@ -167,6 +265,7 @@ bool validateInitParams(const std::string& appId,
     else if (!msgCallback)              error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Message callback is null");
     else if (!initCallback)             error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Initialization callback is null");
     else if (!responseCallback)         error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Response callback is None");
+    else if (!requestHandlerFunc)       error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Request handler function is None");
     else                                ret = true;
 
 
@@ -187,7 +286,8 @@ void initializeMiddleWare(const std::string& appId,
     const ErrCallback& errCallback,
     const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
     const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
-    const ResponseCallback& responseCallback)
+    const ResponseCallback& responseCallback,
+    const RequestHandlerFunc& requestHandlerFunc)
 {
     if (!validateInitParams(appId,
             appGroup,
@@ -201,7 +301,8 @@ void initializeMiddleWare(const std::string& appId,
             errCallback,
             producerProps,
             consumerProps,
-            responseCallback))
+            responseCallback,
+            requestHandlerFunc))
     {
         return;
     }
@@ -232,7 +333,7 @@ void initializeMiddleWare(const std::string& appId,
                         producerProps.at(MiddlewareConfig::bootstrap_servers()));
 
         AdminClient adminClient(adminProps);
-        if(auto res = adminClient.createTopics({appId}, 1, 3);
+        if(auto res = adminClient.createTopics({appId}, 1, 1);
            res.error && res.error.value() != RD_KAFKA_RESP_ERR_TOPIC_ALREADY_EXISTS)
         {
             throw res.error;
@@ -396,18 +497,21 @@ void initializeMiddleWare(const std::string& appId,
     ConsumerFunc groupConsumerFunc = getSubsciptionFunc(groupConsumer);
     ConsumerFunc individualConsumerFunc = getSubsciptionFunc(individualConsumer);
 
+    auto pendingRequestBook = std::make_shared<PendingRequestBook>();
 
     MsgCallback refinedMsgCallback =
-    [errCallback, responseCallback, msgCallback](const std::string& topic,
-                                        const int32_t& partition,
-                                        const int64_t& offset,
-                                        const std::string& msgType,
-                                        const std::string& key,
-                                        const KeyValuePairs& headers,
-                                        const std::string& payload)
+    [errCallback, responseCallback, requestHandlerFunc, msgCallback, pendingRequestBook]
+    (const std::string& topic,
+        const int32_t& partition,
+        const int64_t& offset,
+        const std::string& msgType,
+        const std::string& key,
+        const KeyValuePairs& headers,
+        const std::string& payload)
     {
 
-        if (!handleResponse(topic, partition, offset, msgType, key, headers, payload, responseCallback, errCallback))
+        if (!handleResponse(topic, partition, offset, msgType, key, headers, payload, responseCallback, errCallback)
+            && !handleRequest(topic, partition, offset, msgType, key, headers, payload, requestHandlerFunc, errCallback, pendingRequestBook))
         {
             msgCallback(topic, partition, offset, msgType, key, headers, payload);
         }
@@ -445,10 +549,17 @@ void initializeMiddleWare(const std::string& appId,
                     internalSendCallback);
     }, std::chrono::seconds(heartbeatIntervalSec));
 
+    auto respondFunc =
+    [producerFunc, errCallback, pendingRequestBook]
+    (const uint64_t& reqId,  // ReqId
+        const std::string& respPayload,         // Resp payload
+        bool isLast,                       // isLast
+        const SendCallback& sendCallback)
+    {
+        return respond(reqId, respPayload, isLast, sendCallback, pendingRequestBook, producerFunc, errCallback);
+    };
 
-
-    initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc, requestFunc);
-
+    initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc, requestFunc,  respondFunc);
 
     if(individualConsumerFunc(appId, std::nullopt) != APIError::Ok) {
         return errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unable to subscribe self topic"));

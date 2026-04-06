@@ -14,3 +14,4 @@ set(CMAKE_EXECUTABLE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYP
 add_subdirectory(MiddleWare)
 add_subdirectory(DataTumper)
 add_subdirectory(MDGateways)
+add_subdirectory(SDPMock)

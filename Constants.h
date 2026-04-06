@@ -3,6 +3,7 @@
 #include <optional>
 #include "TypeWrapper.h"
 
+#define NUllKey "Null"
 
 enum class MetaEnum
 {
@@ -341,6 +342,12 @@ struct Tags : StringEnum<MetaEnum::Tags, Tags>
         static Tags instance{"destination_topics"};
         return instance;
     }
+
+    static Tags const& exchange()
+    { 
+        static Tags instance{"exchange"};
+        return instance;
+    }
 };
 
 struct TagValues : StringEnum<MetaEnum::TagValues, Tags>
@@ -393,6 +400,12 @@ struct HeaderKey : StringEnum<MetaEnum::HeaderKey, HeaderKey>
     static HeaderKey const& destTopic()
     { 
         static HeaderKey instance{"destTopic"};
+        return instance;
+    }
+
+    static HeaderKey const& response_error()
+    { 
+        static HeaderKey instance{"response_error"};
         return instance;
     }
 
@@ -515,7 +528,8 @@ enum class APIError
     KeyEmpty,
     PayloadEmpty,
     SubscriptionFailed,
-    InvalidInstrumentType
+    InvalidInstrumentType,
+    NonExistentReqId
 };
 
 inline std::optional<PriceType> strToPriceType(const std::string& priceType)

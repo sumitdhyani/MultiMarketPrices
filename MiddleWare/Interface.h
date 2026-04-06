@@ -41,7 +41,14 @@ namespace Middleware
                                                     const std::string&,         // target topic
                                                     const SendCallback&)>;       
     
-
+    using RequestHandlerFunc        = std::function<void(const uint64_t&,  // ReqId
+                                                        const std::string&)>;  // request payload
+    
+    using RespondFunc                = std::function<APIError (const uint64_t&,  // ReqId
+                                                    const std::string&,         // Resp payload
+                                                    bool,                       // isLast
+                                                    const SendCallback&)>;
+    
     // No memory management done 
     using LowLevelProducerFunc     = std::function<APIError (const char*,   // Topic
                                                             const char*,   // MessageType
@@ -74,7 +81,8 @@ namespace Middleware
                                             const LowLevelProducerFunc&,
                                             const ConsumerFunc&,    // To subscribe as group
                                             const ConsumerFunc&,    // To subscribe as individual
-                                            const RequestFunc&)>;
+                                            const RequestFunc&,
+                                            const RespondFunc&)>;
 
     void initializeMiddleWare(const std::string& appId,
                             const std::string& appType,
@@ -88,5 +96,6 @@ namespace Middleware
                             const ErrCallback& errCallback,
                             const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
                             const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
-                            const ResponseCallback& responseCallback);
+                            const ResponseCallback& responseCallback,
+                            const RequestHandlerFunc& requestHandlerFunc);
 }

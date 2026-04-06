@@ -251,7 +251,8 @@ bool validateInitParams(const std::string& appId,
     const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
     const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
     const ResponseCallback& responseCallback,
-    const RequestHandlerFunc& requestHandlerFunc)
+    const RequestHandlerFunc& requestHandlerFunc,
+    const uint16_t& minAvailableBrokers)
 {
     Error error = Error(RD_KAFKA_RESP_ERR_NO_ERROR, "");
     bool ret = false;
@@ -266,6 +267,7 @@ bool validateInitParams(const std::string& appId,
     else if (!initCallback)             error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Initialization callback is null");
     else if (!responseCallback)         error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Response callback is None");
     else if (!requestHandlerFunc)       error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Request handler function is None");
+    else if (!minAvailableBrokers)      error = Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Minimum available brokers cannot be zero");
     else                                ret = true;
 
 
@@ -287,7 +289,8 @@ void initializeMiddleWare(const std::string& appId,
     const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
     const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
     const ResponseCallback& responseCallback,
-    const RequestHandlerFunc& requestHandlerFunc)
+    const RequestHandlerFunc& requestHandlerFunc,
+    uint16_t minAvailableBrokers)
 {
     if (!validateInitParams(appId,
             appGroup,
@@ -302,7 +305,8 @@ void initializeMiddleWare(const std::string& appId,
             producerProps,
             consumerProps,
             responseCallback,
-            requestHandlerFunc))
+            requestHandlerFunc,
+            minAvailableBrokers))
     {
         return;
     }
@@ -333,7 +337,7 @@ void initializeMiddleWare(const std::string& appId,
                         producerProps.at(MiddlewareConfig::bootstrap_servers()));
 
         AdminClient adminClient(adminProps);
-        if(auto res = adminClient.createTopics({appId}, 1, 1);
+        if(auto res = adminClient.createTopics({appId}, 1, minAvailableBrokers);
            res.error && res.error.value() != RD_KAFKA_RESP_ERR_TOPIC_ALREADY_EXISTS)
         {
             throw res.error;

@@ -344,7 +344,8 @@ void PlatformComm::init(const std::string& brokers,
             const std::string& appId,
             const std::string& appGroup,
             const std::string& inTopic,
-            const Middleware::ErrCallback& initErrorCb)
+            const Middleware::ErrCallback& initErrorCb,
+            const uint16_t& minAvailableBrokers)
 {
     ::appId = appId;
     ::appGroup = appGroup;
@@ -393,6 +394,7 @@ void PlatformComm::init(const std::string& brokers,
         { {MiddlewareConfig::bootstrap_servers(), brokers} },
         { {MiddlewareConfig::bootstrap_servers(), brokers} },
         responseCb,
-        [](const uint64_t&, const std::string&){ std::cout << "Received request without a handler" << std::endl; }
+        [](const uint64_t&, const std::string&){ std::cout << "Received request without a handler" << std::endl; },
+        minAvailableBrokers
     );
 }

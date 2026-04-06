@@ -12,6 +12,8 @@ using Scheduler_SPtr = std::shared_ptr<Scheduler>;
 using Timer = ULMTTools::Timer;
 using Timer_SPtr = std::shared_ptr<Timer>;
 
+uint16_t availableBrokers = 0;
+
 void initMiddleware(const std::string& brokers,
         const SubUnsubFunc& subFunc,
         const SubUnsubFunc& unsububFunc,
@@ -34,7 +36,8 @@ void initMiddleware(const std::string& brokers,
         appId,
         appGroup,
         inTopic,
-        initErrorCb);
+        initErrorCb,
+        availableBrokers);
 }
 
 bool addKey(json::object& update)
@@ -262,6 +265,13 @@ void onPriceUpdate(const std::string& update)
 }
 int main(int argc, char** argv)
 {
+    if (argc < 2)
+    {
+        std::cerr << "Usage: " << argv[0] << " <available_brokers>" << std::endl;
+        return 1;
+    }
+
+    ::availableBrokers = atoi(argv[1]);
     char const* host = "stream.binance.com";
     char const* port = "9443";
     auto const path = "/stream";

@@ -40,5 +40,6 @@ namespace PlatformComm
             const std::string& appId,
             const std::string& appGroup,
             const std::string& inTopic,
-            const Middleware::ErrCallback& initErrorCb);
+            const Middleware::ErrCallback& initErrorCb,
+            const uint16_t& minAvailableBrokers);
 }

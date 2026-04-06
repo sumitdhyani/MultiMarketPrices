@@ -97,5 +97,6 @@ namespace Middleware
                             const std::unordered_map<MiddlewareConfig, std::string>& producerProps,
                             const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
                             const ResponseCallback& responseCallback,
-                            const RequestHandlerFunc& requestHandlerFunc);
+                            const RequestHandlerFunc& requestHandlerFunc,
+                            const uint16_t minAvailableBrokers);
 }

@@ -26,7 +26,8 @@ public:
     using Callback = std::function<void(boost::json::value, beast::error_code)>;
 
     explicit BinanceRestClient(net::strand<net::io_context::executor_type>& strand,
-                               ssl::context& ctx);
+                               ssl::context& ctx,
+                               const std::function<void()>& readyHandler);
 
     // ==================== PUBLIC METHODS ====================
     void ping(const Callback& cb);
@@ -45,20 +46,44 @@ public:
     void run();
 
 private:
-        bool isFatalError(const beast::error_code& ec) {
-            return false;
-        }
+    bool isFatalError(const beast::error_code& ec) {
+        return
+        ec.category() == net::error::get_ssl_category()
+        || ec == net::error::operation_aborted
+        || ec == http::error::bad_alloc
+        || ec == http::error::bad_method
+        || ec == http::error::bad_version
+        || ec == http::error::bad_status
+        || ec == http::error::bad_reason
+        || ec == http::error::bad_field
+        || ec == http::error::bad_value
+        || ec == http::error::bad_content_length
+        || ec == http::error::bad_transfer_encoding
+        || ec == http::error::bad_chunk
+        || ec == http::error::bad_chunk_extension
+        || ec == http::error::bad_line_ending
+        || ec == http::error::bad_obs_fold;
+    }
+
     net::strand<net::io_context::executor_type>& m_strand;
     ssl::context& m_ctx;
 
+    void scheduleKeepAlive()
+    {
+        m_timer.expires_after(std::chrono::seconds(30));
+        m_timer.async_wait([self = shared_from_this()](const boost::system::error_code& ec) {
+                if (!ec) self->keepAlive();
+        });
+    }
+
     void keepAlive()
     {
-        if(!m_queue.empty() || !m_connected) return;
-        
-        m_timer.expires_after(std::chrono::seconds(300));
-        m_timer.async_wait([self = shared_from_this()](const boost::system::error_code& ec) {
-                self->keepAlive();
-        });
+        if(!m_connected) return;
+        if(m_queue.empty())
+        {
+            ping([](auto, auto){});
+        }
+        scheduleKeepAlive();
     }
     
     const std::string m_host = "api.binance.com";
@@ -67,7 +92,7 @@ private:
     net::steady_timer m_timer;
 
     // Persistent connection
-    beast::ssl_stream<beast::tcp_stream> m_stream;
+    std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> m_stream;
     tcp::resolver m_resolver;
 
     // Queue system
@@ -77,11 +102,15 @@ private:
         std::string query;
         Callback callback;
     };
+
+    const std::function<void()> m_readyHandler;
     std::queue<PendingRequest> m_queue;
     bool m_connected;
+    bool m_connectedOnce;
 
     beast::flat_buffer m_buffer;
     http::response<http::string_body> m_response;
+    http::request<http::string_body> m_request;
 
     // Internal methods
     void launch_request(const std::string& path,

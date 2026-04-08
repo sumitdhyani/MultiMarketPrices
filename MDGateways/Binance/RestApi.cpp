@@ -5,13 +5,16 @@
 // ====================== IMPLEMENTATION ======================
 
 BinanceRestClient::BinanceRestClient(net::strand<net::io_context::executor_type>& strand,
-                                     ssl::context& ctx)
+                                     ssl::context& ctx,
+                                    const std::function<void()>& readyHandler)
     : m_strand(strand)
     , m_ctx(ctx)
-    , m_stream(strand, ctx)
+    , m_stream(std::make_unique<beast::ssl_stream<beast::tcp_stream>>(strand, ctx))
     , m_resolver(strand)
     , m_timer(strand)
     , m_connected(false)
+    , m_connectedOnce(false)
+    , m_readyHandler(readyHandler)
 {
 }
 
@@ -31,22 +34,25 @@ void BinanceRestClient::launch_request(const std::string& path,
     std::string target = m_api_version + path;
     if (!query.empty()) target += "?" + query;
 
-    m_queue.push({target, method, query, cb});
-    if (m_queue.size() == 1)
-    {
-        start_next_request();
-    }
+    net::post(m_strand, [self = shared_from_this(), this, target, method, query, cb]() {
+        m_queue.push({target, method, query, cb});
+        if (m_queue.size() == 1 && m_connected)
+        {
+            start_next_request();
+        }
+    });
+    
 }
 
 void BinanceRestClient::start_next_request()
 {
     auto const& current = m_queue.front();
-    http::request<http::string_body> http_req{current.method, current.target, 11};
-    http_req.set(http::field::host, m_host);
-    http_req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+    m_request = {current.method, current.target, 11};
+    m_request.set(http::field::host, m_host);
+    m_request.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
 
-    std::cout << "[Binance REST] Sending request: " << http_req.method_string() << " " << http_req.target() << std::endl;
-    http::async_write(m_stream, http_req,
+    std::cout << "[Binance REST] Sending request: " << m_request.method_string() << " " << m_request.target() << std::endl;
+    http::async_write(*m_stream, m_request,
         beast::bind_front_handler(&BinanceRestClient::on_write, shared_from_this()));
     std::cout << "[Binance REST] sent request: " << std::endl;
 }
@@ -56,9 +62,9 @@ void BinanceRestClient::on_resolve(beast::error_code ec, tcp::resolver::results_
     if (ec) return fail(ec, "resolve");
 
     std::cout << "[Binance REST] DNS resolution successful, connecting..." << std::endl;
-    beast::get_lowest_layer(m_stream).expires_after(std::chrono::seconds(30));
+    beast::get_lowest_layer(*m_stream).expires_after(std::chrono::seconds(30));
 
-    beast::get_lowest_layer(m_stream).async_connect(results,
+    beast::get_lowest_layer(*m_stream).async_connect(results,
         beast::bind_front_handler(&BinanceRestClient::on_connect, shared_from_this()));
 }
 
@@ -68,14 +74,14 @@ void BinanceRestClient::on_connect(beast::error_code ec, tcp::resolver::results_
 
     std::cout << "[Binance REST] Connected to server, performing SSL handshake..." << std::endl;
     // SNI Hostname
-    if (!SSL_set_tlsext_host_name(m_stream.native_handle(), m_host.c_str()))
+    if (!SSL_set_tlsext_host_name((*m_stream).native_handle(), m_host.c_str()))
     {
         ec = beast::error_code(static_cast<int>(::ERR_get_error()),
                                net::error::get_ssl_category());
         return fail(ec, "SNI");
     }
 
-    m_stream.async_handshake(ssl::stream_base::client,
+    (*m_stream).async_handshake(ssl::stream_base::client,
         beast::bind_front_handler(&BinanceRestClient::on_handshake, shared_from_this()));
 }
 
@@ -85,16 +91,22 @@ void BinanceRestClient::on_handshake(beast::error_code ec)
 
     std::cout << "[Binance REST] SSL handshake successful, connection established!" << std::endl;
 
-    beast::get_lowest_layer(m_stream).expires_never();
+    beast::get_lowest_layer(*m_stream).expires_never();
     m_connected = true;
     std::cout << "[Binance REST] Connected successfully!\n";
 
-    m_timer.expires_after(std::chrono::seconds(300));
-    m_timer.async_wait([self = shared_from_this()](const boost::system::error_code& ec) {
-        if (!ec) {
-            self->keepAlive();
-        }
-    });
+    m_timer.cancel();
+    scheduleKeepAlive();
+    if (!m_queue.empty())
+    {
+        start_next_request();
+    }
+
+    if(!m_connectedOnce)
+    {
+        m_connectedOnce = true;
+        m_readyHandler();
+    }
 }
 
 void BinanceRestClient::on_write(beast::error_code ec, std::size_t)
@@ -107,21 +119,29 @@ void BinanceRestClient::do_read()
 {
     std::cout << "[Binance REST] awaiting next response..." << std::endl;
     m_buffer.clear();
-    http::async_read(m_stream, m_buffer, m_response,
+    http::async_read(*m_stream, m_buffer, m_response,
         beast::bind_front_handler(&BinanceRestClient::on_read, shared_from_this()));
 }
 
-void BinanceRestClient::on_read(beast::error_code ec, std::size_t)
+void BinanceRestClient::on_read(beast::error_code ec, std::size_t bytesRead)
 {
-    if (ec) return fail(ec, "read");
+    if (ec)
+    {
+        auto const& cb = m_queue.front().callback;
+        cb(json::value{}, ec);
+        m_queue.pop();
+        return fail(ec, "read");
+    }
 
-    std::cout << "[Binance REST] Response received, processing..." << std::endl;
     boost::json::value result;
     try {
         if (!m_response.body().empty())
             result = boost::json::parse(m_response.body());
-    } catch (...) {}
+    } catch (const std::exception& e) {
+        std::cerr << "[Binance REST] JSON parse error: " << e.what() << std::endl;
+    }
 
+    m_response = {};  // Full reset — clear() only clears headers, not body
     // Call user callback
     auto const& cb = m_queue.front().callback;
     cb(result, ec);
@@ -139,18 +159,30 @@ void BinanceRestClient::fail(beast::error_code ec, const char* what)
     std::cerr << "[Binance REST] " << what << ": " << ec.message() << "\n";
     m_connected = false;
 
-    if (isFatalError(ec)) {
+    if (isFatalError(ec))
+    {
         std::cerr << "[Binance REST] Fatal error encountered. Closing connection.\n";
+        m_timer.cancel();
+        close_connection();
+        while (!m_queue.empty())
+        {
+            auto const& cb = m_queue.front().callback;
+            cb(json::value{}, ec);
+            m_queue.pop();
+        }
+
         return;
     }
-
+    
+    m_resolver  = tcp::resolver(m_strand);
+    m_stream    = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(m_strand, m_ctx); 
     run();
 }
 
 void BinanceRestClient::close_connection()
 {
     beast::error_code ignore;
-    m_stream.shutdown(ignore);
+    (*m_stream).shutdown(ignore);
 }
 
 // ====================== PUBLIC METHODS ======================
@@ -239,24 +271,26 @@ void processCommand(const std::string& command,
     }
 }
 
-int main()
-{
-    net::io_context ioc;
-    ssl::context ctx(ssl::context::tlsv12_client);
-    auto strand  = net::make_strand<net::io_context::executor_type>(ioc.get_executor());
-    std::shared_ptr<BinanceRestClient> client = std::make_shared<BinanceRestClient>(strand, ctx);
+// int main()
+// {
+//     net::io_context ioc;
+//     ssl::context ctx(ssl::context::tlsv12_client);
+//     auto strand  = net::make_strand<net::io_context::executor_type>(ioc.get_executor());
+//     std::shared_ptr<BinanceRestClient> client = std::make_shared<BinanceRestClient>(strand, ctx,
+//     [&client, &strand](){
+//         std::thread([&client, &strand](){ 
+//             while(true)
+//             {
+//                 std::cout << "Enter command (e.g., 'd BTCUSDT' for depth, 't' for ping): " << std::endl;
+//                 std::string command;
+//                 std::getline(std::cin, command);
+//                 processCommand(command, client, strand);
+//             }
+//         }).detach();    
+//     });
 
-    std::thread([client, &strand](){ 
-        std::this_thread::sleep_for(std::chrono::seconds(10)); // Give some time for the client to connect
-        while(true)
-        {
-            std::cout << "Enter command (e.g., 'd BTCUSDT' for depth, 't' for ping): " << std::endl;
-            std::string command;
-            std::getline(std::cin, command);
-            processCommand(command, client, strand);
-        }
-    }).detach();
-    client->run();
-    ioc.run();
-    return 0;
-}
+    
+//     client->run();
+//     ioc.run();
+//     return 0;
+// }

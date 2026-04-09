@@ -140,7 +140,8 @@ int main()
             const Middleware::LowLevelProducerFunc& lowLevelProducerFunc,
             const Middleware::ConsumerFunc& groupConsumerFunc,
             const Middleware::ConsumerFunc& individualConsumerFunc,
-            const Middleware::RequestFunc& requestFunc)
+            const Middleware::RequestFunc& requestFunc,
+        const Middleware::RespondFunc& respondFunc)
     {
         // producerFunc("sdp_node_3",
         //             MessageType::heartBeat(),
@@ -201,6 +202,8 @@ int main()
             {MiddlewareConfig::bootstrap_servers(), brokers},
             {MiddlewareConfig::group_id(), "DataDumperApp"}
         },
-        responseCb
+        responseCb,
+        [](const uint64_t&, const std::string&){ std::cout << "Received request without a handler" << std::endl; },
+        1
     );
 }

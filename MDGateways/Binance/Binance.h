@@ -2,6 +2,7 @@
 #include <optional>
 #include <PlatformComm/PlatformComm.h>
 #include "WebSockets.h"
+#include "RestApi.h"
 
 struct BinancePriceType : StringEnum<MetaEnum::PriceType, BinancePriceType>
 {
@@ -44,16 +45,22 @@ struct BinanceTag : StringEnum<MetaEnum::Tags, BinanceTag>
         return instance;
     }
 
+    static BinanceTag const& data()
+    { 
+        static BinanceTag instance{"data"};
+        return instance;
+    }
+
 };
 
-std::optional<BinancePriceType> strToBinancePriceType(const std::string& priceType)
+inline std::optional<BinancePriceType> strToBinancePriceType(const std::string& priceType)
 {
     if (priceType == *BinancePriceType::trade()) return BinancePriceType::trade();
     else if (priceType == *BinancePriceType::depthUpdate()) return BinancePriceType::depthUpdate();
     else return std::nullopt;
 }
 
-std::optional<PriceType> binanceToPlatformPriceType(const BinancePriceType& priceType)
+inline std::optional<PriceType> binanceToPlatformPriceType(const BinancePriceType& priceType)
 {
     if (priceType == BinancePriceType::trade()) return PriceType::trade();
     else if (priceType == BinancePriceType::depthUpdate()) return PriceType::depth();

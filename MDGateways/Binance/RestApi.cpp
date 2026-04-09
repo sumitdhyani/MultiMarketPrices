@@ -1,12 +1,15 @@
 #include <thread>
 #include <ranges>
+#include "Binance.h"
 #include "RestApi.h"
 
 // ====================== IMPLEMENTATION ======================
 
 BinanceRestClient::BinanceRestClient(net::strand<net::io_context::executor_type>& strand,
-                                     ssl::context& ctx,
-                                    const std::function<void()>& readyHandler)
+        ssl::context& ctx,
+        const std::function<void()>& readyHandler,
+        const std::function<void(const beast::error_code&)>& errHandler,
+        const uint16_t& retryIntervalSec)
     : m_strand(strand)
     , m_ctx(ctx)
     , m_stream(std::make_unique<beast::ssl_stream<beast::tcp_stream>>(strand, ctx))
@@ -14,7 +17,9 @@ BinanceRestClient::BinanceRestClient(net::strand<net::io_context::executor_type>
     , m_timer(strand)
     , m_connected(false)
     , m_connectedOnce(false)
-    , m_readyHandler(readyHandler)
+    , m_readyCallback(readyHandler)
+    , m_errCallback(errHandler)
+    , m_retryIntervalSec(retryIntervalSec)
 {
 }
 
@@ -105,7 +110,7 @@ void BinanceRestClient::on_handshake(beast::error_code ec)
     if(!m_connectedOnce)
     {
         m_connectedOnce = true;
-        m_readyHandler();
+        m_readyCallback();
     }
 }
 
@@ -128,15 +133,17 @@ void BinanceRestClient::on_read(beast::error_code ec, std::size_t bytesRead)
     if (ec)
     {
         auto const& cb = m_queue.front().callback;
-        cb(json::value{}, ec);
+        cb(json::object{}, ec);
         m_queue.pop();
         return fail(ec, "read");
     }
 
-    boost::json::value result;
+    boost::json::object result;
     try {
         if (!m_response.body().empty())
-            result = boost::json::parse(m_response.body());
+            std::cout << m_response.body() << std::endl;
+            std::cout << "========================================" << std::endl;
+            result[*BinanceTag::data()] = boost::json::parse(m_response.body());
     } catch (const std::exception& e) {
         std::cerr << "[Binance REST] JSON parse error: " << e.what() << std::endl;
     }
@@ -167,16 +174,26 @@ void BinanceRestClient::fail(beast::error_code ec, const char* what)
         while (!m_queue.empty())
         {
             auto const& cb = m_queue.front().callback;
-            cb(json::value{}, ec);
+            cb(json::object{}, ec);
             m_queue.pop();
         }
 
+        m_errCallback(ec);
         return;
     }
     
     m_resolver  = tcp::resolver(m_strand);
     m_stream    = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(m_strand, m_ctx); 
-    run();
+    m_timer.cancel();
+    m_timer.expires_after(std::chrono::seconds(m_retryIntervalSec));
+    m_timer.async_wait(
+        [self = shared_from_this(), this]
+        (const boost::system::error_code& ec)
+        {
+            if(!ec) run();
+            m_errCallback(ec);
+        }
+    );
 }
 
 void BinanceRestClient::close_connection()
@@ -258,7 +275,7 @@ void processCommand(const std::string& command,
     else if(tokens[0] == "t") {
         net::post(strand, 
             [client, symbol = tokens[1]](){
-                client->getRecentTrades(symbol, 5, [](auto json, auto ec){
+                client->getRecentTrades(symbol, 1, [](auto json, auto ec){
                     if (ec) {
                         std::cerr << "Error in getRecentTrades: " << ec.message() << std::endl;
                     } else {
@@ -276,19 +293,25 @@ void processCommand(const std::string& command,
 //     net::io_context ioc;
 //     ssl::context ctx(ssl::context::tlsv12_client);
 //     auto strand  = net::make_strand<net::io_context::executor_type>(ioc.get_executor());
-//     std::shared_ptr<BinanceRestClient> client = std::make_shared<BinanceRestClient>(strand, ctx,
-//     [&client, &strand](){
-//         std::thread([&client, &strand](){ 
-//             while(true)
-//             {
-//                 std::cout << "Enter command (e.g., 'd BTCUSDT' for depth, 't' for ping): " << std::endl;
-//                 std::string command;
-//                 std::getline(std::cin, command);
-//                 processCommand(command, client, strand);
-//             }
-//         }).detach();    
-//     });
-
+//     std::shared_ptr<BinanceRestClient> client =
+//     std::make_shared<BinanceRestClient>(strand,
+//         ctx,
+//         [&client, &strand]() {
+//             std::thread([&client, &strand](){ 
+//                 while(true)
+//                 {
+//                     std::cout << "Enter command (e.g., 'd BTCUSDT' for depth, 't' for ping): " << std::endl;
+//                     std::string command;
+//                     std::getline(std::cin, command);
+//                     processCommand(command, client, strand);
+//                 }
+//             }).detach();    
+//         },
+//         [](const beast::error_code& ec) {
+//             std::cout << "Received fatal error from rest client, details: " << ec.message() << std::endl;
+//         },
+//         10
+//     );
     
 //     client->run();
 //     ioc.run();

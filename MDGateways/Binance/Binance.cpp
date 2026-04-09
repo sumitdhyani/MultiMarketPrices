@@ -229,13 +229,13 @@ void onPriceUpdate(const std::string& update)
 {
     auto obj = json::parse(update).as_object();
     
-    if(!obj.contains("data"))
+    if(!obj.contains(*BinanceTag::data()))
     {
         std::cout << "data tag missing" << std::endl;
         return;
     }
     
-    obj = std::move(obj["data"].as_object());
+    obj = std::move(obj[*BinanceTag::data()].as_object());
     auto priceType = generatePlatfromPriceTypeFromMarketUpdate(obj);
     if(!priceType)
     {
@@ -263,6 +263,52 @@ void onPriceUpdate(const std::string& update)
             *priceType,
             *objStr);
 }
+
+void launchWebSocketClient(net::io_context& ioc,
+    ssl::context& ctx,
+    net::strand<net::io_context::executor_type>& strand)
+{
+    char const* host = "stream.binance.com";
+    char const* port = "9443";
+    auto const path = "/stream";
+
+    std::shared_ptr<session> sess = std::make_shared<session>(strand,
+        ctx, 
+        onPriceUpdate,
+        host,
+        port,
+        path,
+        10,
+        [](const beast::error_code& ec, bool isFatal){},
+        [&sess, &strand](){
+            std::thread([&sess, &strand](){
+                onGatewayConnected(sess,
+                    strand,
+                    std::make_shared<Timer>(std::make_shared<Scheduler>()),    
+                    std::make_shared<Worker>());
+            }).detach();
+        }
+    );
+    sess->run();
+}
+
+void launchRestClient(net::io_context& ioc,
+    ssl::context& ctx,
+    net::strand<net::io_context::executor_type>& strand)
+{
+    std::shared_ptr<BinanceRestClient> client =
+    std::make_shared<BinanceRestClient>(strand,
+        ctx,
+        [&ioc, &ctx, &strand](){launchWebSocketClient(ioc, ctx, strand);},
+        [&ioc](auto const& err)
+        {
+            ioc.stop();
+        },
+        10);
+    
+    client->run();
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 2)
@@ -283,29 +329,9 @@ int main(int argc, char** argv)
     ssl::context ctx{ssl::context::tlsv12_client};
     net::strand<net::io_context::executor_type> strand{ioc.get_executor()};
 
-    // Launch the asynchronous operation
-    std::shared_ptr<session> sess = std::make_shared<session>(strand,
-        ctx, 
-        onPriceUpdate,
-        host,
-        port,
-        path,
-        10,
-        [](const beast::error_code& ec, bool isFatal){},
-        [&sess, &strand](){
-            std::thread([&sess, &strand](){
-                onGatewayConnected(sess,
-                    strand,
-                    std::make_shared<Timer>(std::make_shared<Scheduler>()),    
-                    std::make_shared<Worker>());
-            }).detach();
-        }
-    );
+    launchRestClient(ioc, ctx, strand);
 
-
-    sess->run();
     ioc.run();
-
     return 0;
 }
 

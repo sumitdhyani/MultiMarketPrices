@@ -23,11 +23,13 @@ using tcp       = net::ip::tcp;
 class BinanceRestClient : public std::enable_shared_from_this<BinanceRestClient>
 {
 public:
-    using Callback = std::function<void(boost::json::value, beast::error_code)>;
+    using Callback = std::function<void(boost::json::object, beast::error_code)>;
 
     explicit BinanceRestClient(net::strand<net::io_context::executor_type>& strand,
-                               ssl::context& ctx,
-                               const std::function<void()>& readyHandler);
+        ssl::context& ctx,
+        const std::function<void()>& readyHandler,
+        const std::function<void(const beast::error_code&)>& errHandler,
+        const uint16_t& retryIntervalSec);
 
     // ==================== PUBLIC METHODS ====================
     void ping(const Callback& cb);
@@ -103,7 +105,9 @@ private:
         Callback callback;
     };
 
-    const std::function<void()> m_readyHandler;
+    const std::function<void()> m_readyCallback;
+    const std::function<void(const beast::error_code&)> m_errCallback;
+    const uint16_t m_retryIntervalSec;
     std::queue<PendingRequest> m_queue;
     bool m_connected;
     bool m_connectedOnce;

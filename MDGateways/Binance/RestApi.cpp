@@ -7,8 +7,7 @@
 
 BinanceRestClient::BinanceRestClient(net::strand<net::io_context::executor_type>& strand,
         ssl::context& ctx,
-        const std::function<void()>& readyHandler,
-        const std::function<void(const beast::error_code&)>& errHandler,
+        const std::function<void(const beast::error_code&)>& readyHandler,
         const uint16_t& retryIntervalSec)
     : m_strand(strand)
     , m_ctx(ctx)
@@ -18,7 +17,6 @@ BinanceRestClient::BinanceRestClient(net::strand<net::io_context::executor_type>
     , m_connected(false)
     , m_connectedOnce(false)
     , m_readyCallback(readyHandler)
-    , m_errCallback(errHandler)
     , m_retryIntervalSec(retryIntervalSec)
 {
 }
@@ -110,7 +108,8 @@ void BinanceRestClient::on_handshake(beast::error_code ec)
     if(!m_connectedOnce)
     {
         m_connectedOnce = true;
-        m_readyCallback();
+        // Reply with a null error
+        m_readyCallback(beast::error_code());
     }
 }
 
@@ -130,13 +129,7 @@ void BinanceRestClient::do_read()
 
 void BinanceRestClient::on_read(beast::error_code ec, std::size_t bytesRead)
 {
-    if (ec)
-    {
-        auto const& cb = m_queue.front().callback;
-        cb(json::object{}, ec);
-        m_queue.pop();
-        return fail(ec, "read");
-    }
+    if (ec) return fail(ec, "read");
 
     boost::json::object result;
     try {
@@ -166,7 +159,9 @@ void BinanceRestClient::fail(beast::error_code ec, const char* what)
     std::cerr << "[Binance REST] " << what << ": " << ec.message() << "\n";
     m_connected = false;
 
-    if (isFatalError(ec))
+    // The session is to be terminated only if the clinet was never connected
+    // if the session has once started, it should try to reconsile indefinitely
+    if (isFatalError(ec) && !m_connectedOnce)
     {
         std::cerr << "[Binance REST] Fatal error encountered. Closing connection.\n";
         m_timer.cancel();
@@ -178,7 +173,7 @@ void BinanceRestClient::fail(beast::error_code ec, const char* what)
             m_queue.pop();
         }
 
-        m_errCallback(ec);
+        m_readyCallback(ec);
         return;
     }
     
@@ -191,7 +186,7 @@ void BinanceRestClient::fail(beast::error_code ec, const char* what)
         (const boost::system::error_code& ec)
         {
             if(!ec) run();
-            m_errCallback(ec);
+            else std::cout << "Problem with timer, details" << ec.message() << std::endl;
         }
     );
 }

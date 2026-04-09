@@ -299,10 +299,17 @@ void launchRestClient(net::io_context& ioc,
     std::shared_ptr<BinanceRestClient> client =
     std::make_shared<BinanceRestClient>(strand,
         ctx,
-        [&ioc, &ctx, &strand](){launchWebSocketClient(ioc, ctx, strand);},
-        [&ioc](auto const& err)
-        {
-            ioc.stop();
+        [&ioc, &ctx, &strand]
+        (const beast::error_code& ec){
+            if(ec)
+            {
+                std::cout << "Error in Rest client init phase : " << ec.message() << std::endl;
+                ioc.stop();
+            }
+            else
+            {
+                launchWebSocketClient(ioc, ctx, strand);
+            }
         },
         10);
     

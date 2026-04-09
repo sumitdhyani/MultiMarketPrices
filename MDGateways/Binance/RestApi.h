@@ -27,8 +27,7 @@ public:
 
     explicit BinanceRestClient(net::strand<net::io_context::executor_type>& strand,
         ssl::context& ctx,
-        const std::function<void()>& readyHandler,
-        const std::function<void(const beast::error_code&)>& errHandler,
+        const std::function<void(const beast::error_code&)>& readyHandler,
         const uint16_t& retryIntervalSec);
 
     // ==================== PUBLIC METHODS ====================
@@ -105,7 +104,7 @@ private:
         Callback callback;
     };
 
-    const std::function<void()> m_readyCallback;
+    const std::function<void(const beast::error_code&)> m_readyCallback;
     const std::function<void(const beast::error_code&)> m_errCallback;
     const uint16_t m_retryIntervalSec;
     std::queue<PendingRequest> m_queue;

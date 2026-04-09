@@ -27,8 +27,7 @@ class session : public std::enable_shared_from_this<session>
 {
     using PriceCallback = std::function<void(const std::string&)>; 
     // error, fatal(true means that the connection will not be recovered)
-    using ErrCallback = std::function<void(const beast::error_code&, bool)>;
-    using ReadyCallback = std::function<void()>;
+    using ReadyCallback = std::function<void(const beast::error_code&)>;
 
     tcp::resolver m_resolver;
     websocket::stream<
@@ -38,11 +37,11 @@ class session : public std::enable_shared_from_this<session>
     const std::string m_port;
     const std::string m_path;
     const PriceCallback m_priceCallback;
-    const ErrCallback m_errCallback;
     const ReadyCallback m_readyCallback;
     std::queue<std::string> m_commandQueue;
     bool m_inFlight;
     bool m_connected;
+    bool m_connectedOnce;
     int m_msgNo;
     const uint32_t m_retryDelay_sec;
     std::set<std::string> m_depthSubscriptions;
@@ -126,13 +125,15 @@ class session : public std::enable_shared_from_this<session>
     {
         if(ec) return fail(ec, "handshake");
         m_connected = true;
+        m_connectedOnce = true;
         beast::get_lowest_layer(m_ws).expires_never();
         std::cout << "[Binance WS] on_handshake" << std::endl;
 
         for (auto const& symbol : m_tradeSubscriptions) subscribeTrade(symbol);
         for (auto const& symbol : m_depthSubscriptions) subscribeDepth(symbol);
         
-        m_readyCallback();
+        // Notify with null error
+        if(!m_connectedOnce) m_readyCallback(beast::error_code());
         read();
     }
 
@@ -213,9 +214,12 @@ class session : public std::enable_shared_from_this<session>
     void fail(beast::error_code ec, char const* what)
     {
         m_connected = false;
-        m_errCallback(ec, false);
         std::cerr << what << ": " << ec.message() << "\n";
-        if (isErrorFatal(ec)) return;
+        if (isErrorFatal(ec) && !m_connectedOnce)
+        {
+            m_readyCallback(ec);
+            return;
+        }
         std::this_thread::sleep_for(std::chrono::seconds(m_retryDelay_sec));
         run();
     }
@@ -235,18 +239,17 @@ public:
         const std::string& port,
         const std::string& path,
         const uint32_t& retryDelay_sec,
-        const ErrCallback& errCallback,
         const ReadyCallback& readyCallback)
         : m_resolver(strand)
         , m_ws(strand, ctx)
         , m_priceCallback(priceCallback)
         , m_inFlight(false)
         , m_connected(false)
+        , m_connectedOnce(false)
         , m_host(host)
         , m_port(port)
         , m_path(path)
         , m_retryDelay_sec(retryDelay_sec)
-        , m_errCallback(errCallback)
         , m_readyCallback(readyCallback)
     {}
 

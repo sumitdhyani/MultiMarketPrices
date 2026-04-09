@@ -279,8 +279,9 @@ void launchWebSocketClient(net::io_context& ioc,
         port,
         path,
         10,
-        [](const beast::error_code& ec, bool isFatal){},
-        [&sess, &strand](){
+        [&sess, &strand, &ioc](const beast::error_code& ec){
+            if (ec){ ioc.stop(); return;}
+
             std::thread([&sess, &strand](){
                 onGatewayConnected(sess,
                     strand,

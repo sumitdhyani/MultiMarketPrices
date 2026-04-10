@@ -54,10 +54,10 @@ void BinanceRestClient::start_next_request()
     m_request.set(http::field::host, m_host);
     m_request.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
 
-    std::cout << "[Binance REST] Sending request: " << m_request.method_string() << " " << m_request.target() << std::endl;
+    //std::cout << "[Binance REST] Sending request: " << m_request.method_string() << " " << m_request.target() << std::endl;
     http::async_write(*m_stream, m_request,
         beast::bind_front_handler(&BinanceRestClient::on_write, shared_from_this()));
-    std::cout << "[Binance REST] sent request: " << std::endl;
+    //std::cout << "[Binance REST] sent request: " << std::endl;
 }
 
 void BinanceRestClient::on_resolve(beast::error_code ec, tcp::resolver::results_type results)
@@ -121,7 +121,7 @@ void BinanceRestClient::on_write(beast::error_code ec, std::size_t)
 
 void BinanceRestClient::do_read()
 {
-    std::cout << "[Binance REST] awaiting next response..." << std::endl;
+    //std::cout << "[Binance REST] awaiting next response..." << std::endl;
     m_buffer.clear();
     http::async_read(*m_stream, m_buffer, m_response,
         beast::bind_front_handler(&BinanceRestClient::on_read, shared_from_this()));

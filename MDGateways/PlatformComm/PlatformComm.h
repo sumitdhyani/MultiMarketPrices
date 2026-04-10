@@ -22,6 +22,8 @@ namespace json = boost::json;
 struct SubUnsubKey : TypeWrapper<std::string> {};
 using  KeyGenFunc = std::function<std::optional<std::string>(const json::object&)>;
 using SubUnsubFunc = std::function<void(const std::string&)>;
+using SnapshotCallback = std::function<void(const boost::json::object&, const std::string&)>;
+using GetPriceSnapshotFunc = std::function<void(const std::string&, const PriceType&, const SnapshotCallback&)>;
 using DataFunc = std::function<void(const std::string&, // Key
                                     const PriceType&,
                                     const std::string&)>; // Update 
@@ -33,6 +35,7 @@ namespace PlatformComm
     void init(const std::string& brokers,
             const SubUnsubFunc& subFunc,
             const SubUnsubFunc& unsububFunc,
+            const GetPriceSnapshotFunc& getPriceSnapshotFunc,
             const KeyGenFunc& keyGenFunc,
             const std::function<void(const DataFunc&)>& registrationFunc,
             const std::shared_ptr<ULMTTools::Timer> timer,

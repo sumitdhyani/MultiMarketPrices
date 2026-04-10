@@ -11,12 +11,14 @@ std::string inTopic;
 SubUnsubFunc subFunc;
 SubUnsubFunc unsubFunc;
 KeyGenFunc keyGenFunc;
+GetPriceSnapshotFunc getPriceSnapshotFunc;
 std::unordered_map<std::string, std::unordered_set<std::string>> symbolToDestTopics;
 std::unordered_map<std::string, std::unordered_set<std::string>> destTopicToSymbols;
 
 std::unordered_map<int32_t, std::unique_ptr<PerPartitionFSM>> partitionFSMs;
 Middleware::ProducerFunc producerFunc;
 Middleware::RequestFunc requestFunc;
+Middleware::RespondFunc respondFunc;
 
 void sencCb(const Middleware::RecordMetadata& rm, const Middleware::Error& err)
 {
@@ -126,66 +128,6 @@ bool handleBookKeeping(const std::string& key, const std::string& destTopic, boo
                    handleBookKeepingForUnsubscription(key, destTopic);
 }
 
-InstrumentType strToInstrumentType(const std::string& instrumentType)
-{
-    if (instrumentType == *InstrumentType::spot())
-    {
-        return InstrumentType::spot();
-    }
-    else if (instrumentType == *InstrumentType::future())
-    {
-        return InstrumentType::future();
-    }
-    else if (instrumentType == *InstrumentType::option())
-    {
-        return InstrumentType::option();
-    }
-
-    throw std::invalid_argument("Invalid instrument type: " + instrumentType);
-}
-
-OptionType strToOptionType(const std::string& instrumentType)
-{
-    if (instrumentType == *OptionType::call())
-    {
-        return OptionType::call();
-    }
-    else if (instrumentType == *OptionType::put())
-    {
-        return OptionType::put();
-    }
-
-    throw std::invalid_argument("Invalid option type: " + instrumentType);
-}
-
-std::optional<std::string> generateKey(const json::object& obj)
-{
-    try
-    {
-        Instrument instrument(obj.at(*Tags::symbol()).as_string().c_str());
-        InstrumentType instrumentType = 
-        obj.contains(*InstrumentAttributes::instrument_type()) ?
-            strToInstrumentType(obj.at(*InstrumentAttributes::instrument_type()).as_string().c_str()) :
-            InstrumentType::spot();
-            
-        std::string key = *instrument + ":" +
-                            obj.at(*Tags::subscription_type()).as_string().c_str() + ":" +
-                            *instrumentType;
-        if(instrumentType == InstrumentType::option())
-        {
-            key += ":" + *strToOptionType(obj.at(*InstrumentAttributes::option_type()).as_string().c_str());
-        }
-        return key;
-    }
-    catch(const std::exception& e)
-    {
-        std::cout << "Error generating key: " << e.what() << std::endl;
-        return std::nullopt;
-    }
-
-}
-
-
 void msgCb(const std::string& topic,
     const int32_t& partition,
     const int64_t& offset,
@@ -214,8 +156,7 @@ void msgCb(const std::string& topic,
         }
         
         auto& [_, existingFSM] = *it;
-        existingFSM->handleEvent(SubUnsubKey(*key),
-                        isSub);
+        existingFSM->handleEvent(SubUnsubKey(*key), isSub);
         
         std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
         producerFunc(*Topic::pubSub_sync_data(),
@@ -337,6 +278,7 @@ void onPriceDataFromExchange(const std::string& key,
 void PlatformComm::init(const std::string& brokers,
             const SubUnsubFunc& subFunc,
             const SubUnsubFunc& unsubFunc,
+            const GetPriceSnapshotFunc& getPriceSnapshotFunc,
             const KeyGenFunc& keyGenFunc,
             const std::function<void(const DataFunc&)>& registrationFunc,
             const std::shared_ptr<ULMTTools::Timer> timer,
@@ -353,6 +295,7 @@ void PlatformComm::init(const std::string& brokers,
     ::subFunc = subFunc;
     ::unsubFunc = unsubFunc;
     ::keyGenFunc = keyGenFunc;
+    ::getPriceSnapshotFunc = getPriceSnapshotFunc;
     
     registrationFunc(
         [workerThread](const std::string& key, const PriceType& priceType, const std::string& update )
@@ -373,6 +316,7 @@ void PlatformComm::init(const std::string& brokers,
     {
         ::producerFunc = producerFunc;
         ::requestFunc = requestFunc;
+        ::respondFunc = respondFunc;
 
         groupConsumerFunc(::inTopic, rebalanceCallback);
     };
@@ -394,7 +338,20 @@ void PlatformComm::init(const std::string& brokers,
         { {MiddlewareConfig::bootstrap_servers(), brokers} },
         { {MiddlewareConfig::bootstrap_servers(), brokers} },
         responseCb,
-        [](const uint64_t&, const std::string&){ std::cout << "Received request without a handler" << std::endl; },
+        [](const uint64_t& reqId, const std::string& payLoad){
+            json::object obj = json::parse(payLoad).as_object();
+            auto priceType = strToPriceType(obj[*Tags::subscription_type()].as_string().c_str());
+            if(!priceType) return;
+            
+            ::getPriceSnapshotFunc(obj[*Tags::symbol()].as_string().c_str(),
+                                *priceType,
+                                [reqId]
+                                (const boost::json::object& snapshot, const std::string& err){
+                                    if(!err.empty()) return;
+                                    ::respondFunc(reqId, json::serialize(snapshot), true, sencCb);
+                                }
+                            );
+        },
         minAvailableBrokers
     );
 }

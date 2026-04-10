@@ -17,6 +17,7 @@ uint16_t availableBrokers = 0;
 void initMiddleware(const std::string& brokers,
         const SubUnsubFunc& subFunc,
         const SubUnsubFunc& unsububFunc,
+        const GetPriceSnapshotFunc& getPriceSnapshotFunc,
         const KeyGenFunc& keyGenFunc,
         const std::function<void(const DataFunc&)>& registrationFunc,
         const Timer_SPtr& timer,
@@ -29,6 +30,7 @@ void initMiddleware(const std::string& brokers,
     PlatformComm::init(brokers,
         subFunc,
         unsububFunc,
+        getPriceSnapshotFunc,
         keyGenFunc,
         registrationFunc,
         timer,
@@ -128,6 +130,67 @@ void subscribe(const std::shared_ptr<session>& sess,
     }    
 }
 
+void transformSnapshot(boost::json::object& obj, const std::string& symbol)
+{
+    json::value data = obj["data"];
+    if (data.is_array())
+    {
+        obj["data"] = (data.as_array()[0]).as_object();
+        auto& matter = obj["data"].as_object();
+        matter["quantity"] = matter["qty"];
+    }
+    
+    auto& matter = obj["data"].as_object();
+    matter[*Tags::symbol()] = symbol;
+}
+
+void getSnapshot(const std::shared_ptr<BinanceRestClient>& client,
+    const std::string& symbolUnformatted,
+    const PriceType& priceType,
+    const SnapshotCallback& snapshotCallback)
+{
+    std::string symbol = symbolUnformatted;
+    std::transform(symbol.begin(), symbol.end(), symbol.begin(), ::toupper);
+    auto depthHandler =
+    [snapshotCallback, symbol]
+    (const boost::json::object& obj, const beast::error_code& ec){
+        if (ec) snapshotCallback(obj, ec.message());
+        else
+        {
+            boost::json::object copy{obj};
+            json::object& depth = copy["data"].as_object();
+            depth[*Tags::symbol()] = symbol;
+            snapshotCallback(copy["data"].as_object(), "");
+        }
+    };
+
+    auto tradeHandler =
+    [snapshotCallback, symbol]
+    (const boost::json::object& obj, const beast::error_code& ec){
+        if (ec) snapshotCallback(obj, ec.message());
+        else
+        {
+            json::object copy{obj};
+            json::array& arr = copy["data"].as_array();
+            json::object& trade = arr[0].as_object();
+            trade[*Tags::symbol()] = symbol;
+            trade["quantity"] = trade["qty"];
+            trade.erase("qty");
+            snapshotCallback(trade, "");
+        }
+    };
+
+
+    if (priceType == *PriceType::depth())
+    {
+        client->getDepth(symbol, 5, depthHandler);
+    }
+    else if (priceType == *PriceType::trade())
+    {
+        client->getRecentTrades(symbol, 1, tradeHandler);
+    }
+}
+
 void unsubscribe(const std::shared_ptr<session>& sess,
     const std::string& key)
 {
@@ -152,6 +215,7 @@ void unsubscribe(const std::shared_ptr<session>& sess,
 }
 
 void onGatewayConnected(const std::shared_ptr<session>& sess,
+    const std::shared_ptr<BinanceRestClient>& client,
     net::strand<net::io_context::executor_type>& strand,
     const Timer_SPtr& timer,
     const Worker_SPtr& workerThread)
@@ -172,6 +236,12 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
                     std::cout << "Unsubscribing from " << key << std::endl;
                     unsubscribe(sess, key);
             });
+        },
+        [client](const std::string& symbol,
+            const PriceType& priceType,
+            const SnapshotCallback& snapshotCallback)
+        {
+            getSnapshot(client, symbol, priceType, snapshotCallback);
         },
         generateKeyFromSubUnsubRequest,
         [](const DataFunc& dataFunc){
@@ -266,31 +336,36 @@ void onPriceUpdate(const std::string& update)
 
 void launchWebSocketClient(net::io_context& ioc,
     ssl::context& ctx,
-    net::strand<net::io_context::executor_type>& strand)
+    net::strand<net::io_context::executor_type>& strand,
+    const std::shared_ptr<BinanceRestClient>& client)
 {
     char const* host = "stream.binance.com";
     char const* port = "9443";
     auto const path = "/stream";
 
-    std::shared_ptr<session> sess = std::make_shared<session>(strand,
+    auto sessHolder = std::make_shared<std::shared_ptr<session>>();
+
+    *sessHolder = std::make_shared<session>(strand,
         ctx, 
         onPriceUpdate,
         host,
         port,
         path,
         10,
-        [&sess, &strand, &ioc](const beast::error_code& ec){
+        [sessHolder, client, &strand, &ioc](const beast::error_code& ec){
             if (ec){ ioc.stop(); return;}
 
-            std::thread([&sess, &strand](){
+            auto sess = *sessHolder;
+            std::thread([sess, &strand, client](){
                 onGatewayConnected(sess,
+                    client,
                     strand,
                     std::make_shared<Timer>(std::make_shared<Scheduler>()),    
                     std::make_shared<Worker>());
             }).detach();
         }
     );
-    sess->run();
+    (*sessHolder)->run();
 }
 
 void launchRestClient(net::io_context& ioc,
@@ -300,7 +375,7 @@ void launchRestClient(net::io_context& ioc,
     std::shared_ptr<BinanceRestClient> client =
     std::make_shared<BinanceRestClient>(strand,
         ctx,
-        [&ioc, &ctx, &strand]
+        [&ioc, &ctx, &strand, &client]
         (const beast::error_code& ec){
             if(ec)
             {
@@ -309,12 +384,14 @@ void launchRestClient(net::io_context& ioc,
             }
             else
             {
-                launchWebSocketClient(ioc, ctx, strand);
+                launchWebSocketClient(ioc, ctx, strand, client);
             }
         },
-        10);
+        10
+    );
     
     client->run();
+    ioc.run();
 }
 
 int main(int argc, char** argv)
@@ -339,7 +416,6 @@ int main(int argc, char** argv)
 
     launchRestClient(ioc, ctx, strand);
 
-    ioc.run();
     return 0;
 }
 

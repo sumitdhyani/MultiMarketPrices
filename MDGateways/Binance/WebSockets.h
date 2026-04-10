@@ -30,8 +30,7 @@ class session : public std::enable_shared_from_this<session>
     using ReadyCallback = std::function<void(const beast::error_code&)>;
 
     tcp::resolver m_resolver;
-    websocket::stream<
-    beast::ssl_stream<beast::tcp_stream>> m_ws;
+    websocket::stream<beast::ssl_stream<beast::tcp_stream>> m_ws;
     beast::flat_buffer m_buffer;
     const std::string m_host;
     const std::string m_port;
@@ -125,7 +124,6 @@ class session : public std::enable_shared_from_this<session>
     {
         if(ec) return fail(ec, "handshake");
         m_connected = true;
-        m_connectedOnce = true;
         beast::get_lowest_layer(m_ws).expires_never();
         std::cout << "[Binance WS] on_handshake" << std::endl;
 
@@ -133,7 +131,12 @@ class session : public std::enable_shared_from_this<session>
         for (auto const& symbol : m_depthSubscriptions) subscribeDepth(symbol);
         
         // Notify with null error
-        if(!m_connectedOnce) m_readyCallback(beast::error_code());
+        if(!m_connectedOnce)
+        {
+            m_connectedOnce = true;
+            m_readyCallback(beast::error_code());
+        }
+
         read();
     }
 

@@ -23,7 +23,7 @@ using tcp       = net::ip::tcp;
 class BinanceRestClient : public std::enable_shared_from_this<BinanceRestClient>
 {
 public:
-    using Callback = std::function<void(boost::json::object, beast::error_code)>;
+    using Callback = std::function<void(const boost::json::object&, const beast::error_code&)>;
 
     explicit BinanceRestClient(net::strand<net::io_context::executor_type>& strand,
         ssl::context& ctx,

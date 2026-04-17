@@ -1,7 +1,6 @@
+#include <boost/json/object.hpp>
 #include <iostream>
-#include <chrono>
 #include <ranges>
-#include <system_error>
 #include <stdint.h>
 #include <boost/json.hpp>
 #include <MTTools/TaskScheduler.hpp>
@@ -10,6 +9,7 @@
 #include <Constants.h>
 #include <UUIDGen.hpp>
 #include <Logging.h>
+#include <ConfigLib/ConfigLib.h>
 
 using namespace NanoLog::LogLevels;
 
@@ -163,9 +163,42 @@ void runningErrorCb(const Middleware::Error& error) {
     }
 }
 
-int main()
+bool validateConfig(const json::object& cfg)
 {
-    Logging::init("DataDumper");
+    return true;
+}
+
+void onConfigUpdate(const json::object& cfg)
+{
+
+}
+
+int main(int argc, char* argv[])
+{
+    auto const& cfg_opt = Config::init(appId, onConfigUpdate, validateConfig);
+    if (!cfg_opt)
+    {
+        return 1;
+    }
+
+    auto const& cfg = *cfg_opt;
+
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <appId>" << std::endl;
+        return 1;
+    }
+
+    const std::string appId = argv[1];
+    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
+    auto logLevel_opt = strToLogLevel(logLevelStr);
+    if (!logLevel_opt)
+    {
+        std::cout << "Invalid log level: " << logLevelStr
+                  << ", should be one of ERROR, WARNING, INFO, DEBUG, case insensitive" << std::endl;
+    }
+
+    auto const& logLevel = *logLevel_opt;
+    Logging::init(appId, logLevel);
 
     auto scheduler = std::make_shared<ULMTTools::TaskScheduler>();
     auto timer =  std::make_shared<ULMTTools::Timer>(scheduler);
@@ -192,8 +225,8 @@ int main()
 
     std::string brokers = "127.0.0.1:9092";
     NANO_LOG(DEBUG, "Initializing middleware");
-    Middleware::initializeMiddleWare("DataDumper",
-        "DataDumperGrp",
+    Middleware::initializeMiddleWare(appId,
+        *AppGroup::DataDumper(),
         [appStr]() { return appStr; },
         [heartBeatStr]() { return heartBeatStr; },
         5,
@@ -206,11 +239,10 @@ int main()
             {MiddlewareConfig::bootstrap_servers(), brokers},
         },
         {
-            {MiddlewareConfig::bootstrap_servers(), brokers},
-            {MiddlewareConfig::group_id(), "DataDumperApp"}
+            {MiddlewareConfig::bootstrap_servers(), brokers}
         },
         responseCb,
         [](const uint64_t&, const std::string&){ NANO_LOG(DEBUG, "Received request without a handler"); },
-        1
+        atoi(cfg.at(*ConfigTag::numMinBrokers()).as_string().c_str())
     );
 }

@@ -18,66 +18,69 @@
 
 namespace Config
 {
+    std::atomic<bool> stopFlag(false);
 
-namespace {
 
-void watch_file(const std::string& dir,
-                const std::string& filename,
-                const std::function<void()>& listener,
-                std::atomic<bool>& stopFlag)
+namespace
 {
-    int fd = inotify_init();
-    if (fd < 0) {
-        perror("inotify_init");
-        return;
-    }
 
-    int wd = inotify_add_watch(fd, dir.c_str(),
-                               IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE);
-
-    if (wd == -1) {
-        perror("inotify_add_watch");
-        close(fd);
-        return;
-    }
-
-    
-    NANO_LOG(DEBUG, "Watching dir: %s", dir.c_str());
-    char buffer[EVENT_BUF_LEN];
-
-    while (!stopFlag) {
-        int length = read(fd, buffer, EVENT_BUF_LEN);
-
-        if (length < 0) {
-            perror("read");
-            break;
+    void watch_file(const std::string& dir,
+                    const std::string& filename,
+                    const std::function<void()>& listener,
+                    std::atomic<bool>& stopFlag)
+    {
+        int fd = inotify_init();
+        if (fd < 0) {
+            perror("inotify_init");
+            return;
         }
 
-        if (length == 0) {
-            break;
+        int wd = inotify_add_watch(fd, dir.c_str(),
+                                IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE);
+
+        if (wd == -1) {
+            perror("inotify_add_watch");
+            close(fd);
+            return;
         }
 
-        int i = 0;
-        while (i < length) {
-            struct inotify_event *event =
-                (struct inotify_event*)&buffer[i];
+        
+        NANO_LOG(DEBUG, "Watching dir: %s", dir.c_str());
+        char buffer[EVENT_BUF_LEN];
 
-            if (event->len > 0) {
-                if (std::strcmp(filename.c_str(), event->name) == 0) {
-                    if (event->mask & (IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE)) {
-                        std::cout << "Detected change in " << filename << std::endl;
-                        listener();
-                    }
-                }
+        while (!stopFlag) {
+            int length = read(fd, buffer, EVENT_BUF_LEN);
+
+            if (length < 0) {
+                perror("read");
+                break;
             }
 
-            i += sizeof(struct inotify_event) + event->len;
-        }
-    }
+            if (length == 0) {
+                break;
+            }
 
-    inotify_rm_watch(fd, wd);
-    close(fd);
-}
+            int i = 0;
+            while (i < length) {
+                struct inotify_event *event =
+                    (struct inotify_event*)&buffer[i];
+
+                if (event->len > 0) {
+                    if (std::strcmp(filename.c_str(), event->name) == 0) {
+                        if (event->mask & (IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE)) {
+                            std::cout << "Detected change in " << filename << std::endl;
+                            listener();
+                        }
+                    }
+                }
+
+                i += sizeof(struct inotify_event) + event->len;
+            }
+        }
+
+        inotify_rm_watch(fd, wd);
+        close(fd);
+    }
 }
 
 
@@ -195,6 +198,7 @@ void onConfigUpdate(const std::string& appId,
     }
 }
 
+
 std::optional<json::object> init(const std::string& appId,
     const ConfigListener& configListener,
     const ConfigValidator& configValidator)
@@ -210,15 +214,18 @@ std::optional<json::object> init(const std::string& appId,
         return cfg_opt;
     }
 
-    std::atomic<bool> stopFlag(false);
-    std::thread([&stopFlag, appId, configListener, configValidator](){
+    std::thread([appId, configListener, configValidator](){
         auto const listener = [appId, configListener, configValidator](){
             onConfigUpdate(appId, configListener, configValidator);
         };
         watch_file("./config", "config.json", listener, stopFlag);
     }).detach();
     return cfg_opt;
+}
 
+void stop()
+{
+    stopFlag = true;
 }
 
 

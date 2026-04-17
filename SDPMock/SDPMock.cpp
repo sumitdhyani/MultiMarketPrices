@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <iostream>
 #include <chrono>
 #include <ranges>
@@ -9,6 +10,7 @@
 #include <MiddleWare/Interface.h>
 #include <Constants.h>
 #include <Logging.h>
+#include <ConfigLib/ConfigLib.h>
 
 using namespace NanoLog::LogLevels;
 
@@ -57,6 +59,20 @@ std::string getDescMsg()
     }));
 }
 
+bool validateConfig(const json::object& cfg)
+{
+    return true;
+}
+
+void onConfigUpdate(const json::object& cfg)
+{
+    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
+    if (auto const& level_opt = strToLogLevel(logLevelStr); level_opt)
+    {
+        auto const& level = *level_opt;
+        Logging::setLoggingLevel(level);
+    }
+}
 
 void initErrorCb(const Middleware::Error& err)
 {
@@ -123,9 +139,33 @@ void sendCb(const Middleware::RecordMetadata& rm, const Middleware::Error& err) 
     NANO_LOG(DEBUG, "Error while sending msg, code %d details: %s", err.value(), err.message().c_str());
 }
 
-int main()
+int main(int argc, char** argv)
 {
-    Logging::init("SDPMock");
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <appId>" << std::endl;
+        return 1;
+    }
+    const std::string appId = argv[1];
+
+    auto const& cfg_opt = Config::init(appId, onConfigUpdate, validateConfig);
+    if (!cfg_opt)
+    {
+        return 1;
+    }
+
+    auto const& cfg = *cfg_opt;
+    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
+    auto logLevel_opt = strToLogLevel(logLevelStr);
+    if (!logLevel_opt)
+    {
+        std::cout << "Invalid log level: " << logLevelStr
+                  << ", should be one of ERROR, WARNING, INFO, DEBUG, case insensitive" << std::endl;
+    }
+
+    auto const& logLevel = *logLevel_opt;
+    Logging::init(appId, logLevel);
+    const uint16_t minBrokers = atoi(cfg.at(*ConfigTag::numMinBrokers()).as_string().c_str());
+
 
     auto scheduler = std::make_shared<ULMTTools::TaskScheduler>();
     auto timer =  std::make_shared<ULMTTools::Timer>(scheduler);
@@ -166,7 +206,7 @@ int main()
         },
         {
             {MiddlewareConfig::bootstrap_servers(), brokers},
-            {MiddlewareConfig::group_id(), "DataDumperApp"}
+            {MiddlewareConfig::group_id(), *AppGroup::dummy()}
         },
         responseCb,
         [](const uint64_t& reqId, const std::string& reqpayload){
@@ -180,6 +220,6 @@ int main()
                 true,
                 sendCb);
         },
-        1
+        minBrokers
     );
 }

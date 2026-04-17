@@ -1,5 +1,6 @@
 #pragma once
 
+#include <NanoLog.h>
 #include <string>
 #include <ctime>
 #include <sys/stat.h>
@@ -7,6 +8,7 @@
 #include <thread>
 #include <chrono>
 
+#include "Constants.h"
 #include "NanoLogCpp17.h"
 
 namespace Logging {
@@ -44,7 +46,7 @@ namespace detail {
     }
 }
 
-inline void init(const std::string& appId, const std::string& logDir = "./logs") {
+inline void init(const std::string& appId, const LoggingLevel& logLevel, const std::string& logDir = "./logs") {
     // Create log directory
     mkdir(logDir.c_str(), 0755);
 
@@ -53,12 +55,36 @@ inline void init(const std::string& appId, const std::string& logDir = "./logs")
     detail::currentLogNumber.store(0, std::memory_order_relaxed);
 
     NanoLog::setLogFile(detail::currentLogPath.c_str());
-    NanoLog::setLogLevel(NanoLog::LogLevels::DEBUG);
+
+    NanoLog::LogLevels::LogLevel nanoLogLevel =
+    logLevel == LoggingLevel::ERROR?
+        NanoLog::LogLevels::ERROR:
+    logLevel == LoggingLevel::WARNING?
+        NanoLog::LogLevels::WARNING:
+    logLevel == LoggingLevel::INFO?
+        NanoLog::LogLevels::NOTICE:
+    NanoLog::LogLevels::DEBUG;
+
+    NanoLog::setLogLevel(nanoLogLevel);
     NanoLog::preallocate();
 
     // Start background rotation monitor
     detail::rotationThreadRunning.store(true, std::memory_order_relaxed);
     std::thread(detail::rotationLoop).detach();
+}
+
+inline void setLoggingLevel(const LoggingLevel& logLevel)
+{
+    NanoLog::LogLevels::LogLevel nanoLogLevel =
+    logLevel == LoggingLevel::ERROR?
+        NanoLog::LogLevels::ERROR:
+    logLevel == LoggingLevel::WARNING?
+        NanoLog::LogLevels::WARNING:
+    logLevel == LoggingLevel::INFO?
+        NanoLog::LogLevels::NOTICE:
+    NanoLog::LogLevels::DEBUG;
+
+    NanoLog::setLogLevel(nanoLogLevel);
 }
 
 inline void shutdown() {

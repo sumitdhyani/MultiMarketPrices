@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <optional>
 #include "TypeWrapper.h"
@@ -17,8 +19,34 @@ enum class MetaEnum
     InstrumentType,
     InstrumentAttributes,
     OptionType,
-    PriceType
+    PriceType,
+    AppGroup,
+    LogLevel
 };
+
+enum class LoggingLevel
+{
+    ERROR,
+    WARNING,
+    INFO,
+    DEBUG
+};
+
+inline std::optional<LoggingLevel> strToLogLevel(const std::string& logLevel)
+{
+    static const std::string ERROR      = "ERROR";
+    static const std::string WARNING    = "WARNING";
+    static const std::string INFO       = "INFO";
+    static const std::string DEBUG      = "DEBUG";
+
+    auto uppered = logLevel;
+    std::transform(uppered.begin(), uppered.end(), uppered.begin(), ::toupper);
+    if (uppered == ERROR)               return LoggingLevel::ERROR;
+    else if (uppered == WARNING)        return LoggingLevel::WARNING;
+    else if (uppered == INFO)           return LoggingLevel::INFO;
+    else if (uppered == DEBUG)          return LoggingLevel::DEBUG;
+    else                                return std::nullopt;
+}
 
 template<MetaEnum Enum>
 using StringWrapper = TypeWrapper<std::string>;
@@ -258,6 +286,27 @@ struct InstrumentAttributes : StringEnum<MetaEnum::InstrumentAttributes, Instrum
     }
 };
 
+struct AppGroup : StringEnum<MetaEnum::AppGroup, AppGroup>
+{
+    static AppGroup const& dummy()
+    {
+        static AppGroup instance{"dummy"};
+        return instance;
+    }
+
+    static AppGroup const& DataDumper()
+    {
+        static AppGroup instance{"DataDumper"};
+        return instance;
+    }
+
+    static AppGroup const& BinanceMD()
+    {
+        static AppGroup instance{"BinanceMD"};
+        return instance;
+    }
+};
+
 struct Tags : StringEnum<MetaEnum::Tags, Tags>
 {
     static Tags const& message_type()
@@ -419,6 +468,42 @@ struct ConfigTag : StringEnum<MetaEnum::ConfigTags, ConfigTag>
     static ConfigTag const& app()
     { 
         static ConfigTag instance{"app"};
+        return instance;
+    }
+
+    static ConfigTag const& brokers()
+    { 
+        static ConfigTag instance{"brokers"};
+        return instance;
+    }
+
+    static ConfigTag const& hearbeatInterval()
+    { 
+        static ConfigTag instance{"hearbeatInterval"};
+        return instance;
+    }
+
+    static ConfigTag const& hearbeatTimeout()
+    { 
+        static ConfigTag instance{"hearbeatTimeout"};
+        return instance;
+    }
+
+    static ConfigTag const& numMaxBrokers()
+    { 
+        static ConfigTag instance{"numMaxBrokers"};
+        return instance;
+    }
+
+    static ConfigTag const& numMinBrokers()
+    { 
+        static ConfigTag instance{"numMinBrokers"};
+        return instance;
+    }
+
+    static ConfigTag const& logLevel()
+    { 
+        static ConfigTag instance{"logLevel"};
         return instance;
     }
 };

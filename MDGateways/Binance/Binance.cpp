@@ -1,5 +1,6 @@
 #include "Binance.h"
 #include <Logging.h>
+#include <ConfigLib/ConfigLib.h>
 
 using namespace NanoLog::LogLevels;
 
@@ -416,9 +417,46 @@ void launchRestClient(net::io_context& ioc,
     ioc.run();
 }
 
+bool validateConfig(const json::object& cfg)
+{
+    return true;
+}
+
+void onConfigUpdate(const json::object& cfg)
+{
+    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
+    if (auto const& level_opt = strToLogLevel(logLevelStr); level_opt)
+    {
+        auto const& level = *level_opt;
+        Logging::setLoggingLevel(level);
+    }
+}
+
 int main(int argc, char** argv)
 {
-    Logging::init("BinanceMD");
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <appId>" << std::endl;
+        return 1;
+    }
+    const std::string appId = argv[1];
+
+    auto const& cfg_opt = Config::init(appId, onConfigUpdate, validateConfig);
+    if (!cfg_opt)
+    {
+        return 1;
+    }
+
+    auto const& cfg = *cfg_opt;
+    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
+    auto logLevel_opt = strToLogLevel(logLevelStr);
+    if (!logLevel_opt)
+    {
+        std::cout << "Invalid log level: " << logLevelStr
+                  << ", should be one of ERROR, WARNING, INFO, DEBUG, case insensitive" << std::endl;
+    }
+
+    auto const& logLevel = *logLevel_opt;
+    Logging::init(appId, logLevel);
 
     if (argc < 2)
     {
@@ -426,7 +464,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    ::availableBrokers = atoi(argv[1]);
+    ::availableBrokers = atoi(cfg.at(*ConfigTag::numMinBrokers()).as_string().c_str());
     char const* host = "stream.binance.com";
     char const* port = "9443";
     auto const path = "/stream";

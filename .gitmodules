@@ -6,7 +6,7 @@
 	url = https://github.com/sumitdhyani/MTTools.git
 [submodule "ThirdParty/NanoLog"]
 	path = ThirdParty/NanoLog
-	url = https://github.com/PlatformLab/NanoLog
+	url = https://github.com/sumitdhyani/NanoLog.git
 [submodule "ThirdParty/CPPFsm"]
 	path = ThirdParty/CPPFsm
 	url = https://github.com/sumitdhyani/CPPFsm.git

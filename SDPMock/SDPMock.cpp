@@ -8,6 +8,9 @@
 #include <MTTools/WorkerThread.hpp>
 #include <MiddleWare/Interface.h>
 #include <Constants.h>
+#include <Logging.h>
+
+using namespace NanoLog::LogLevels;
 
 using Timer = ULMTTools::Timer;
 namespace json = boost::json;
@@ -38,19 +41,12 @@ void msgCb(const std::string& topic,
     const std::string& value)
 {
     // Process the received message (for demonstration, we just print it)
-    std::cout << "Received message from topic: " << topic
-            << ", partition: " << partition
-            << ", offset: " << offset
-            << ", msgType: " << msgType
-            << ", key: " << key
-            << ", value: " << value
-            << ", headers: {";
+    NANO_LOG(DEBUG, "Received message from topic: %s, partition: %d, offset: %ld, msgType: %s, key: %s, value: %s",
+            topic.c_str(), partition, offset, msgType.c_str(), key.c_str(), value.c_str());
     for (const auto& [headerKey, headerValue] : headers)
     {
-        std::cout << *headerKey << ": " << headerValue << ", ";
+        NANO_LOG(DEBUG, "Header - %s: %s", (*headerKey).c_str(), headerValue.c_str());
     }
-
-    std::cout << "}" << std::endl;
 }
 
 std::string getDescMsg()
@@ -64,22 +60,19 @@ std::string getDescMsg()
 
 void initErrorCb(const Middleware::Error& err)
 {
-    std::cout << "Error while initializing Middleware: " << err.value() << ", " << err.message() << std::endl;
+    NANO_LOG(DEBUG, "Error while initializing Middleware: %d, %s", err.value(), err.message().c_str());
 }
 
 void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
 {
-    std::cout   << "Response received:" << std::endl
-                << "ReqId: " << reqId << std::endl
-                << "Payload: " << msg << std::endl
-                << "isLast: " << isLast << std::endl;
+    NANO_LOG(DEBUG, "Response received: ReqId: %lu, Payload: %s, isLast: %d", reqId, msg.c_str(), isLast);
 
     std::error_code ec;
     json::object jsonObj = json::parse(msg, ec).as_object();
     if (ec) {
-        std::cerr << "Error parsing JSON: " << ec.message() << std::endl;
+        NANO_LOG(DEBUG, "Error parsing JSON: %s", ec.message().c_str());
     } else {
-        std::cout << "Parsed JSON content: " << json::serialize(jsonObj) << std::endl;
+        NANO_LOG(DEBUG, "Parsed JSON content: %s", json::serialize(jsonObj).c_str());
     }
 
     if(!isLast)
@@ -94,10 +87,10 @@ void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
                 | std::ranges::to<std::vector<std::string>>();
         
         
-        std::cout << "Cleaned params: " << std::endl;
+        NANO_LOG(DEBUG, "Cleaned params:");
         for(auto const& token: tokens)
         {
-            std::cout << token << std::endl;
+            NANO_LOG(DEBUG, "%s", token.c_str());
         }
     }
 }
@@ -105,37 +98,35 @@ void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
 
 
 void runningErrorCb(const Middleware::Error& error) {
-    std::cout << "[ERROR CALLBACK] Code: " << error.value() 
-                << " | Message: " << error.message() 
-                << " | Fatal: " << (error.isFatal() ? "YES" : "NO") 
-                << std::endl;
+    NANO_LOG(DEBUG, "[ERROR CALLBACK] Code: %d | Message: %s | Fatal: %s",
+            error.value(), error.message().c_str(),
+            error.isFatal() ? "YES" : "NO");
 
-    // Connection related errors handle karo
     if (error.value() == RD_KAFKA_RESP_ERR__TRANSPORT ||
         error.value() == RD_KAFKA_RESP_ERR__ALL_BROKERS_DOWN ||
         error.value() == RD_KAFKA_RESP_ERR_NETWORK_EXCEPTION) {
         
-        std::cout << ">>> Broker Disconnected / Network issue detected! Reconnecting...\n";
+        NANO_LOG(DEBUG, ">>> Broker Disconnected / Network issue detected! Reconnecting...");
     }
     else
     {
-        std::cout << "Error from middleware, details: " << error.message() << std::endl;
+        NANO_LOG(DEBUG, "Error from middleware, details: %s", error.message().c_str());
     }
 
     if (error.isFatal()) {
-        std::cerr << ">>> FATAL ERROR! Application should probably shutdown/restart.\n";
+        NANO_LOG(DEBUG, ">>> FATAL ERROR! Application should probably shutdown/restart.");
     }
 }
 
 void sendCb(const Middleware::RecordMetadata& rm, const Middleware::Error& err) {
     if(!err) return;
-    std::cout << "Error while sending msg, code "
-                << err.value() << " details: "
-                << err.message() << std::endl;
+    NANO_LOG(DEBUG, "Error while sending msg, code %d details: %s", err.value(), err.message().c_str());
 }
 
 int main()
 {
+    Logging::init("SDPMock");
+
     auto scheduler = std::make_shared<ULMTTools::TaskScheduler>();
     auto timer =  std::make_shared<ULMTTools::Timer>(scheduler);
     auto worker = std::make_shared<ULMTTools::WorkerThread>();
@@ -151,7 +142,7 @@ int main()
         ::producerFunc = producerFunc;
         ::requestFunc = requestFunc;
         ::respondFunc = respondFunc;
-        std::cout << "Initialization callback called, now subscribing to group consumer topic" << std::endl;
+        NANO_LOG(DEBUG, "Initialization callback called, now subscribing to group consumer topic");
         groupConsumerFunc(*Topic::pubSub_sync_data_requests(), std::nullopt);
     };
 
@@ -159,7 +150,7 @@ int main()
     std::string appStr = getDescMsg();
 
     std::string brokers = "127.0.0.1:9092";
-    std::cout << "Initializing middleware" << std::endl;
+    NANO_LOG(DEBUG, "Initializing middleware");
     Middleware::initializeMiddleWare("SDPMock_1",
         "SDPMock",
         [appStr]() { return appStr; },

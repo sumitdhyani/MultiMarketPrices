@@ -9,6 +9,7 @@ enum class MetaEnum
 {
     MessageType,
     Tags,
+    ConfigTags,
     HeaderKey,
     TagValues,
     MiddlewareConfig,
@@ -313,6 +314,18 @@ struct Tags : StringEnum<MetaEnum::Tags, Tags>
         return instance;
     }
 
+    static Tags const& price()
+    { 
+        static Tags instance{"price"};
+        return instance;
+    }
+
+    static Tags const& quantity()
+    { 
+        static Tags instance{"quantity"};
+        return instance;
+    }
+
     static Tags const& action()
     { 
         static Tags instance{"action"};
@@ -373,6 +386,39 @@ struct TagValues : StringEnum<MetaEnum::TagValues, Tags>
     static Tags const& subscription_type_trade()
     { 
         static Tags instance{"trade"};
+        return instance;
+    }
+};
+
+struct ConfigTag : StringEnum<MetaEnum::ConfigTags, ConfigTag>
+{
+    static ConfigTag const& system()
+    { 
+        static ConfigTag instance{"system"};
+        return instance;
+    }
+
+    static ConfigTag const& groups()
+    { 
+        static ConfigTag instance{"groups"};
+        return instance;
+    }
+
+    static ConfigTag const& group()
+    { 
+        static ConfigTag instance{"group"};
+        return instance;
+    }
+
+    static ConfigTag const& apps()
+    { 
+        static ConfigTag instance{"apps"};
+        return instance;
+    }
+
+    static ConfigTag const& app()
+    { 
+        static ConfigTag instance{"app"};
         return instance;
     }
 };

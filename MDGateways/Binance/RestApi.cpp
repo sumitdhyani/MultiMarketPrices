@@ -2,6 +2,9 @@
 #include <ranges>
 #include "Binance.h"
 #include "RestApi.h"
+#include <Logging.h>
+
+using namespace NanoLog::LogLevels;
 
 // ====================== IMPLEMENTATION ======================
 
@@ -23,7 +26,7 @@ BinanceRestClient::BinanceRestClient(net::strand<net::io_context::executor_type>
 
 void BinanceRestClient::run()
 {
-    std::cout << "Starting Binance REST client..." << std::endl;
+    NANO_LOG(DEBUG, "Starting Binance REST client...");
     m_resolver.async_resolve(m_host, m_port,
             beast::bind_front_handler(&BinanceRestClient::on_resolve, shared_from_this()));
     // This function can be used to start the IO context or any other necessary setup
@@ -64,7 +67,7 @@ void BinanceRestClient::on_resolve(beast::error_code ec, tcp::resolver::results_
 {
     if (ec) return fail(ec, "resolve");
 
-    std::cout << "[Binance REST] DNS resolution successful, connecting..." << std::endl;
+    NANO_LOG(DEBUG, "[Binance REST] DNS resolution successful, connecting...");
     beast::get_lowest_layer(*m_stream).expires_after(std::chrono::seconds(30));
 
     beast::get_lowest_layer(*m_stream).async_connect(results,
@@ -75,7 +78,7 @@ void BinanceRestClient::on_connect(beast::error_code ec, tcp::resolver::results_
 {
     if (ec) return fail(ec, "connect");
 
-    std::cout << "[Binance REST] Connected to server, performing SSL handshake..." << std::endl;
+    NANO_LOG(DEBUG, "[Binance REST] Connected to server, performing SSL handshake...");
     // SNI Hostname
     if (!SSL_set_tlsext_host_name((*m_stream).native_handle(), m_host.c_str()))
     {
@@ -92,11 +95,11 @@ void BinanceRestClient::on_handshake(beast::error_code ec)
 {
     if (ec) return fail(ec, "handshake");
 
-    std::cout << "[Binance REST] SSL handshake successful, connection established!" << std::endl;
+    NANO_LOG(DEBUG, "[Binance REST] SSL handshake successful, connection established!");
 
     beast::get_lowest_layer(*m_stream).expires_never();
     m_connected = true;
-    std::cout << "[Binance REST] Connected successfully!\n";
+    NANO_LOG(DEBUG, "[Binance REST] Connected successfully!");
 
     m_timer.cancel();
     scheduleKeepAlive();
@@ -134,11 +137,11 @@ void BinanceRestClient::on_read(beast::error_code ec, std::size_t bytesRead)
     boost::json::object result;
     try {
         if (!m_response.body().empty())
-            std::cout << m_response.body() << std::endl;
-            std::cout << "========================================" << std::endl;
+            NANO_LOG(DEBUG, "%s", m_response.body().c_str());
+            NANO_LOG(DEBUG, "========================================");
             result[*BinanceTag::data()] = boost::json::parse(m_response.body());
     } catch (const std::exception& e) {
-        std::cerr << "[Binance REST] JSON parse error: " << e.what() << std::endl;
+        NANO_LOG(DEBUG, "[Binance REST] JSON parse error: %s", e.what());
     }
 
     m_response = {};  // Full reset — clear() only clears headers, not body
@@ -156,14 +159,14 @@ void BinanceRestClient::on_read(beast::error_code ec, std::size_t bytesRead)
 
 void BinanceRestClient::fail(beast::error_code ec, const char* what)
 {
-    std::cerr << "[Binance REST] " << what << ": " << ec.message() << "\n";
+    NANO_LOG(DEBUG, "[Binance REST] %s: %s", what, ec.message().c_str());
     m_connected = false;
 
     // The session is to be terminated only if the clinet was never connected
     // if the session has once started, it should try to reconsile indefinitely
     if (isFatalError(ec) && !m_connectedOnce)
     {
-        std::cerr << "[Binance REST] Fatal error encountered. Closing connection.\n";
+        NANO_LOG(DEBUG, "[Binance REST] Fatal error encountered. Closing connection.");
         m_timer.cancel();
         close_connection();
         while (!m_queue.empty())
@@ -186,7 +189,7 @@ void BinanceRestClient::fail(beast::error_code ec, const char* what)
         (const boost::system::error_code& ec)
         {
             if(!ec) run();
-            else std::cout << "Problem with timer, details" << ec.message() << std::endl;
+            else NANO_LOG(DEBUG, "Problem with timer, details: %s", ec.message().c_str());
         }
     );
 }
@@ -204,7 +207,7 @@ void BinanceRestClient::getExchangeInfo(const Callback& cb)         { launch_req
 
 void BinanceRestClient::getDepth(const std::string& symbol, int limit, const Callback& cb)
 {
-    std::cout << "[Binance REST] Queueing getDepth request for symbol: " << symbol << " with limit: " << limit << std::endl;
+    NANO_LOG(DEBUG, "[Binance REST] Queueing getDepth request for symbol: %s with limit: %d", symbol.c_str(), limit);
     std::string q = "symbol=" + symbol + "&limit=" + std::to_string(limit);
     launch_request("/depth", http::verb::get, q, cb);
 }
@@ -242,14 +245,14 @@ void processCommand(const std::string& command,
                     std::shared_ptr<BinanceRestClient> client,
                     net::strand<net::io_context::executor_type>& strand)
 {
-    std::cout << "Processing command: " << command << std::endl;
+    NANO_LOG(DEBUG, "Processing command: %s", command.c_str());
     auto tokens = command |
                  std::views::split(' ') | 
                  std::ranges::to<std::vector<std::string>>();
     
     if (tokens.size() < 2)
     {
-        std::cout << "Invalid command format. Expected: <command> <args...>" << std::endl;
+        NANO_LOG(DEBUG, "Invalid command format. Expected: <command> <args...>");
         return;
     }
 
@@ -258,10 +261,9 @@ void processCommand(const std::string& command,
             [client, symbol = tokens[1]](){
                 client->getDepth(symbol, 5, [](auto json, auto ec){
                     if (ec) {
-                        std::cerr << "Error in getDepth: " << ec.message() << std::endl;
+                        NANO_LOG(DEBUG, "Error in getDepth: %s", ec.message().c_str());
                     } else {
-                        std::cout << "Depth response: " << std::endl;
-                        std::cout << "Depth response: " << boost::json::serialize(json) << std::endl;
+                        NANO_LOG(DEBUG, "Depth response: %s", boost::json::serialize(json).c_str());
                     }
                 });
             }
@@ -272,10 +274,9 @@ void processCommand(const std::string& command,
             [client, symbol = tokens[1]](){
                 client->getRecentTrades(symbol, 1, [](auto json, auto ec){
                     if (ec) {
-                        std::cerr << "Error in getRecentTrades: " << ec.message() << std::endl;
+                        NANO_LOG(DEBUG, "Error in getRecentTrades: %s", ec.message().c_str());
                     } else {
-                        std::cout << "RecentTrades response: " << std::endl;
-                        std::cout << "RecentTrades response: " << boost::json::serialize(json) << std::endl;
+                        NANO_LOG(DEBUG, "RecentTrades response: %s", boost::json::serialize(json).c_str());
                     }
                 });
             }

@@ -2,6 +2,9 @@
 #include<unordered_map>
 #include "PlatformComm.h"
 #include "PerPartitionSM.h"
+#include <Logging.h>
+
+using namespace NanoLog::LogLevels;
 
 using Timer = ULMTTools::Timer;
 namespace json = boost::json;
@@ -23,9 +26,7 @@ Middleware::RespondFunc respondFunc;
 void sencCb(const Middleware::RecordMetadata& rm, const Middleware::Error& err)
 {
     if(!err) return;
-    std::cout << "Error while sending msg, code "
-                << err.value() << " details: "
-                << err.message() << std::endl;
+    NANO_LOG(DEBUG, "Error while sending msg, code %d details: %s", err.value(), err.message().c_str());
 }
 
 void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
@@ -46,7 +47,7 @@ void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
             const std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
 
             uint64_t reqId = gen.generate64();
-            std::cout << "Requesting for group info for group: " << group << " with reqId: " << reqId << std::endl;
+            NANO_LOG(DEBUG, "Requesting for group info for group: %s with reqId: %lu", group.c_str(), reqId);
             requestFunc(reqId,
                         json::serialize(json::object{{
                             {*Tags::group_identifier(), group},
@@ -151,7 +152,7 @@ void msgCb(const std::string& topic,
 
         if (!handleBookKeeping(*key, destTopic, isSub))
         {
-            std::cout << "BookKeeping failed for key: " << *key << " and destTopic: " << destTopic << std::endl;
+            NANO_LOG(DEBUG, "BookKeeping failed for key: %s and destTopic: %s", (*key).c_str(), destTopic.c_str());
             return;
         }
         
@@ -187,7 +188,7 @@ std::string getDescMsg()
 void initErrorCb(const Middleware::Error& err)
 {
     if(!err) return;
-    std::cout << "Error while initializing Middleware: " << err.value() << ", " << err.message() << std::endl;
+    NANO_LOG(DEBUG, "Error while initializing Middleware: %d, %s", err.value(), err.message().c_str());
 }
 
 void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
@@ -195,13 +196,13 @@ void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
     std::error_code ec;
     json::object jsonObj = json::parse(msg, ec).as_object();
     if (ec) {
-        std::cout << "Error parsing JSON: " << ec.message() << std::endl;
+        NANO_LOG(DEBUG, "Error parsing JSON: %s", ec.message().c_str());
         return;
     } else {
-        std::cout << "Parsed JSON content: " << json::serialize(jsonObj) << std::endl;
+        NANO_LOG(DEBUG, "Parsed JSON content: %s", json::serialize(jsonObj).c_str());
     }
 
-    std::cout << "Parsing group from json message";
+    NANO_LOG(DEBUG, "Parsing group from json message");
     std::string group = jsonObj.at(*Tags::group_identifier()).as_string().c_str();
     auto const tokens = group
                 | std::views::split(':')
@@ -210,12 +211,12 @@ void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
     if (tokens.size() != 3)
     {
         // Log error
-        std::cout << "Error: Invalid group identifier format" << std::endl;
+        NANO_LOG(DEBUG, "Error: Invalid group identifier format");
         return;
     }
 
     int32_t partition = atoi((*tokens.rbegin()).c_str());
-    std::cout << "Parsed partition from group identifier: " << (*tokens.rbegin()).c_str() << std::endl;
+    NANO_LOG(DEBUG, "Parsed partition from group identifier: %s", (*tokens.rbegin()).c_str());
 
     if (auto it = partitionFSMs.find(partition); 
         it != partitionFSMs.end())
@@ -228,25 +229,23 @@ void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
 }
 
 void runningErrorCb(const Middleware::Error& error) {
-    std::cout << "[ERROR CALLBACK] Code: " << error.value() 
-                << " | Message: " << error.message() 
-                << " | Fatal: " << (error.isFatal() ? "YES" : "NO") 
-                << std::endl;
+    NANO_LOG(DEBUG, "[ERROR CALLBACK] Code: %d | Message: %s | Fatal: %s",
+            error.value(), error.message().c_str(),
+            error.isFatal() ? "YES" : "NO");
 
-    // Connection related errors handle karo
     if (error.value() == RD_KAFKA_RESP_ERR__TRANSPORT ||
         error.value() == RD_KAFKA_RESP_ERR__ALL_BROKERS_DOWN ||
         error.value() == RD_KAFKA_RESP_ERR_NETWORK_EXCEPTION) {
         
-        std::cout << ">>> Broker Disconnected / Network issue detected! Reconnecting...\n";
+        NANO_LOG(DEBUG, ">>> Broker Disconnected / Network issue detected! Reconnecting...");
     }
     else
     {
-        std::cout << "Error from middleware, details: " << error.message() << std::endl;
+        NANO_LOG(DEBUG, "Error from middleware, details: %s", error.message().c_str());
     }
 
     if (error.isFatal()) {
-        std::cerr << ">>> FATAL ERROR! Application should probably shutdown/restart.\n";
+        NANO_LOG(DEBUG, ">>> FATAL ERROR! Application should probably shutdown/restart.");
     }
 }
 
@@ -270,7 +269,7 @@ void onPriceDataFromExchange(const std::string& key,
     }
     else
     {
-        std::cout << "No destination topic found for key: " << key << std::endl;
+        NANO_LOG(DEBUG, "No destination topic found for key: %s", key.c_str());
     }
 }
 
@@ -324,7 +323,7 @@ void PlatformComm::init(const std::string& brokers,
     std::string heartBeatStr = getHeartBeatMsg();
     std::string appStr = getDescMsg();
 
-    std::cout << "Initializing middleware" << std::endl;
+    NANO_LOG(DEBUG, "Initializing middleware");
     Middleware::initializeMiddleWare(appId,
         appGroup,
         [appStr]() { return appStr; },

@@ -3,6 +3,10 @@
 #include <thread>
 #include <chrono>
 #include "Interface.h"
+#include <Logging.h>
+#include <kafka/Log.h>
+
+using namespace NanoLog::LogLevels;
 
 // 3rd party library utils
 using Worker                = ULMTTools::WorkerThread;
@@ -236,6 +240,9 @@ void internalSendCallback(const RecordMetadata& rm, const Error& e)
 void enrichProducerPropsWithErrorCb(Properties& props, ErrCallback errCallback)
 {
     props.put("error_cb", errCallback);
+    props.put("log_cb", [](int /*level*/, const char* /*filename*/, int /*lineno*/, const char* msg) {
+        NANO_LOG(DEBUG, "[Kafka] %s", msg);
+    });
 }
 
 bool validateInitParams(const std::string& appId,
@@ -292,6 +299,11 @@ void initializeMiddleWare(const std::string& appId,
     const RequestHandlerFunc& requestHandlerFunc,
     uint16_t minAvailableBrokers)
 {
+    // Redirect Kafka library-level logs to NanoLog
+    kafka::setGlobalLogger([](int /*level*/, const char* /*filename*/, int /*lineno*/, const char* msg) {
+        NANO_LOG(DEBUG, "[Kafka] %s", msg);
+    });
+
     if (!validateInitParams(appId,
             appGroup,
             descriptionFunc,
@@ -565,9 +577,7 @@ void initializeMiddleWare(const std::string& appId,
 
     initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc, requestFunc,  respondFunc);
 
-    if(individualConsumerFunc(appId, std::nullopt) != APIError::Ok) {
-        return errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Unable to subscribe self topic"));
-    }
+    while(individualConsumerFunc(appId, std::nullopt) != APIError::Ok);
     
     consumptionThread(*individualConsumer, *kafkaWorker, refinedMsgCallback, errCallback);
 }

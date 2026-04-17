@@ -14,6 +14,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <Logging.h>
 
 namespace beast = boost::beast;         // from <boost/beast.hpp>
 namespace http = beast::http;           // from <boost/beast/http.hpp>
@@ -53,7 +54,7 @@ class session : public std::enable_shared_from_this<session>
         // Set a timeout on the operation
         beast::get_lowest_layer(m_ws).expires_after(std::chrono::seconds(60));
 
-        std::cout << "[Binance WS] on_resolve" << std::endl;
+        NANO_LOG(DEBUG, "[Binance WS] on_resolve");
         // Make the connection on the IP address we get from a lookup
         beast::get_lowest_layer(m_ws).async_connect(
             results,
@@ -81,7 +82,7 @@ class session : public std::enable_shared_from_this<session>
             return fail(ec, "connect");
         }
 
-        std::cout << "[Binance WS] on_connect" << std::endl;
+        NANO_LOG(DEBUG, "[Binance WS] on_connect");
         // Perform the SSL handshake
         m_ws.next_layer().async_handshake(
             ssl::stream_base::client,
@@ -112,7 +113,7 @@ class session : public std::enable_shared_from_this<session>
                         " websocket-client-async-ssl");
             }));
 
-        std::cout << "[Binance WS] on_ssl_handshake" << std::endl;
+        NANO_LOG(DEBUG, "[Binance WS] on_ssl_handshake");
         // Perform the websocket handshake
         m_ws.async_handshake(m_host, m_path,
             beast::bind_front_handler(
@@ -125,7 +126,7 @@ class session : public std::enable_shared_from_this<session>
         if(ec) return fail(ec, "handshake");
         m_connected = true;
         beast::get_lowest_layer(m_ws).expires_never();
-        std::cout << "[Binance WS] on_handshake" << std::endl;
+        NANO_LOG(DEBUG, "[Binance WS] on_handshake");
 
         for (auto const& symbol : m_tradeSubscriptions) subscribeTrade(symbol);
         for (auto const& symbol : m_depthSubscriptions) subscribeDepth(symbol);
@@ -217,7 +218,7 @@ class session : public std::enable_shared_from_this<session>
     void fail(beast::error_code ec, char const* what)
     {
         m_connected = false;
-        std::cerr << what << ": " << ec.message() << "\n";
+        NANO_LOG(DEBUG, "%s: %s", what, ec.message().c_str());
         if (isErrorFatal(ec) && !m_connectedOnce)
         {
             m_readyCallback(ec);
@@ -329,7 +330,7 @@ public:
         if (m_inFlight || !m_connected) {
             m_commandQueue.push(jsonCmd);
         } else {
-            std::cout << "Sending command: " << jsonCmd << std::endl;
+            NANO_LOG(DEBUG, "Sending command: %s", jsonCmd.c_str());
             m_ws.async_write(net::buffer(jsonCmd),
                              beast::bind_front_handler(&session::on_write, shared_from_this())
             );
@@ -341,7 +342,7 @@ public:
     void run()
     {
         // Save these for later
-        std::cout << "[Binance WS] run" << std::endl;
+        NANO_LOG(DEBUG, "[Binance WS] run");
         // Look up the domain name
         m_resolver.async_resolve(
             m_host,

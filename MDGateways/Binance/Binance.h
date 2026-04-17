@@ -35,7 +35,7 @@ struct BinanceTag : StringEnum<MetaEnum::Tags, BinanceTag>
 
     static BinanceTag const& quantity()
     { 
-        static BinanceTag instance{"y"};
+        static BinanceTag instance{"q"};
         return instance;
     }
 
@@ -45,9 +45,27 @@ struct BinanceTag : StringEnum<MetaEnum::Tags, BinanceTag>
         return instance;
     }
 
+    static BinanceTag const& bids()
+    { 
+        static BinanceTag instance{"bids"};
+        return instance;
+    }
+
+    static BinanceTag const& asks()
+    { 
+        static BinanceTag instance{"asks"};
+        return instance;
+    }
+
     static BinanceTag const& data()
     { 
         static BinanceTag instance{"data"};
+        return instance;
+    }
+
+    static BinanceTag const& stream()
+    { 
+        static BinanceTag instance{"stream"};
         return instance;
     }
 

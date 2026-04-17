@@ -1,4 +1,7 @@
 #include "Binance.h"
+#include <Logging.h>
+
+using namespace NanoLog::LogLevels;
 
 DataFunc dataFunc;
 bool middlewareInitialized = false;
@@ -50,14 +53,14 @@ bool addKey(json::object& update)
         auto const& binancePriceType = strToBinancePriceType(priceType);
         if(!binancePriceType)
         {
-            std::cout << "Innvalid priceType from exchange: " << priceType;
+            NANO_LOG(DEBUG, "Invalid priceType from exchange: %s", priceType.c_str());
             return false;
         }
 
         auto const& platformPriceType = binanceToPlatformPriceType(*binancePriceType);
         if(!platformPriceType)
         {
-            std::cout << "Unhandled binance pricetype: " << *(binancePriceType.value()) << std::endl;
+            NANO_LOG(DEBUG, "Unhandled binance pricetype: %s", (*(binancePriceType.value())).c_str());
             return false;
         }
 
@@ -68,7 +71,7 @@ bool addKey(json::object& update)
     }
     catch (const std::exception& ex)
     {
-        std::cout << "Problem while creating key from market update: " << ex.what() << std::endl;
+        NANO_LOG(DEBUG, "Problem while creating key from market update: %s", ex.what());
         return false;
     }
 
@@ -102,7 +105,7 @@ std::optional<std::string> generateKeyFromSubUnsubRequest(const json::object& su
             subUnsubRequest.at(*Tags::subscription_type()).as_string();
         return key;
     }catch(const std::exception& ex) {
-        std::cout << "Exception while generatig key from subscription request, details: " << ex.what() << std::endl;
+        NANO_LOG(DEBUG, "Exception while generating key from subscription request, details: %s", ex.what());
         return std::nullopt;
     }
 }
@@ -116,7 +119,7 @@ void subscribe(const std::shared_ptr<session>& sess,
 
     if (tokens.size() < 2)
     {
-        std::cout<< "Invalid key format for key: " << key << std::endl;
+        NANO_LOG(DEBUG, "Invalid key format for key: %s", key.c_str());
     }
 
 
@@ -132,15 +135,16 @@ void subscribe(const std::shared_ptr<session>& sess,
 
 void transformSnapshot(boost::json::object& obj, const std::string& symbol)
 {
-    json::value data = obj["data"];
-    if (data.is_array())
+    json::value data = obj[*BinanceTag::data()];
+    if (data.is_array())// Array comes for trade
     {
-        obj["data"] = (data.as_array()[0]).as_object();
-        auto& matter = obj["data"].as_object();
+        obj[*BinanceTag::data()] = (data.as_array()[0]).as_object();
+        auto& matter = obj[*BinanceTag::data()].as_object();
         matter["quantity"] = matter["qty"];
     }
     
-    auto& matter = obj["data"].as_object();
+    // "symbol" tag is requred regardless it's depth or trade
+    auto& matter = obj[*BinanceTag::data()].as_object();
     matter[*Tags::symbol()] = symbol;
 }
 
@@ -200,7 +204,7 @@ void unsubscribe(const std::shared_ptr<session>& sess,
 
     if (tokens.size() < 2)
     {
-        std::cout<< "Invalid key format for key: " << key << std::endl;
+        NANO_LOG(DEBUG, "Invalid key format for key: %s", key.c_str());
     }
 
 
@@ -227,13 +231,13 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
         [&sess, &strand]
         (const std::string& key){
             net::post(strand, [&sess, key](){
-                std::cout << "Subscribing to " << key << std::endl;
+                NANO_LOG(DEBUG, "Subscribing to %s", key.c_str());
                 subscribe(sess, key);
             });  
         },
         [&sess, &strand](const std::string& key){
             net::post(strand, [&sess, key](){
-                    std::cout << "Unsubscribing from " << key << std::endl;
+                    NANO_LOG(DEBUG, "Unsubscribing from %s", key.c_str());
                     unsubscribe(sess, key);
             });
         },
@@ -254,30 +258,34 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
         "binance_price_fetcher_6",
         "test_topic",
         [](const Middleware::Error& error){
-            std::cerr << "Error initializing middleware: " << error.message() << "\n";
+            NANO_LOG(DEBUG, "Error initializing middleware: %s", error.message().c_str());
         });
 }
 
-std::optional<PriceType> generatePlatfromPriceTypeFromMarketUpdate(const json::object& update)
+bool transformDepthForPlatForm(const std::string& symbol, json::object& obj)
 {
-    try
-    {
-        const std::string priceType = update.at(*BinanceTag::priceType()).as_string().c_str();
-        
-        auto const& binancePriceType = strToBinancePriceType(priceType);
-        if(!binancePriceType)
-        {
-            std::cout << "Innvalid priceType from exchange: " << priceType;
-            return std::nullopt;
-        }
+    obj[*Tags::symbol()] = symbol;
+    return true;
+}
 
-        return binanceToPlatformPriceType(*binancePriceType);
-    }
-    catch (const std::exception& ex)
+bool transformTradeForPlatForm(const std::string& symbol, json::object& obj)
+{
+    if (!obj.contains(*BinanceTag::symbol()) 
+        || !obj.contains(*BinanceTag::price())
+        || !obj.contains(*BinanceTag::quantity()))
     {
-        std::cout << "Problem while creating key from market update: " << ex.what() << std::endl;
-        return std::nullopt;
+        NANO_LOG(DEBUG, "Invalid format for trade");
+        return false;
     }
+    obj[*Tags::symbol()] = obj[*BinanceTag::symbol()];
+    obj[*Tags::price()] = obj[*BinanceTag::price()];
+    obj[*Tags::quantity()] = obj[*BinanceTag::quantity()];
+
+    obj.erase(*BinanceTag::symbol());
+    obj.erase(*BinanceTag::price());
+    obj.erase(*BinanceTag::quantity());
+
+    return true;
 }
 
 std::optional<std::string> generateKeyFromMarketUpdate(const PriceType& priceType, const json::object& update)
@@ -290,7 +298,7 @@ std::optional<std::string> generateKeyFromMarketUpdate(const PriceType& priceTyp
     }
     catch (const std::exception& ex)
     {
-        std::cout << "Problem while creating key from market update: " << ex.what() << std::endl;
+        NANO_LOG(DEBUG, "Problem while creating key from market update: %s", ex.what());
         return std::nullopt;
     }
 }
@@ -301,37 +309,51 @@ void onPriceUpdate(const std::string& update)
     
     if(!obj.contains(*BinanceTag::data()))
     {
-        std::cout << "data tag missing" << std::endl;
+        NANO_LOG(DEBUG, "data tag missing");
         return;
     }
     
+    
+    const std::string& symbolAndstream = obj[*BinanceTag::stream()].as_string().c_str();
+    auto tokens = symbolAndstream
+            | std::views::split('@')
+            | std::ranges::to<std::vector<std::string>>();
+    
+    if(tokens.size() < 2)
+    {
+        NANO_LOG(DEBUG, "Invalid value for stream: %s", symbolAndstream.c_str());
+        return;
+    }
+
+    std::string& symbol = tokens[0];
+    std::transform(symbol.begin(), symbol.end(), symbol.begin(), ::toupper);
+    const std::string& stream = tokens[1];
+    std::string key;
+
     obj = std::move(obj[*BinanceTag::data()].as_object());
-    auto priceType = generatePlatfromPriceTypeFromMarketUpdate(obj);
-    if(!priceType)
+    if (stream.find(*PriceType::trade()) != std::string::npos)
     {
-        std::cout << "Unable to generate the key for this update: " << update << std::endl;
+        key = symbol + ":" + *PriceType::trade();
+        if(!transformTradeForPlatForm(symbol, obj)) return;
+        auto const& objStr = json::serialize(obj);
+        dataFunc(key,
+                PriceType::trade(),
+                objStr);
+    }
+    else if (stream.find(*PriceType::depth()) != std::string::npos)
+    {
+        key = symbol + ":" + *PriceType::depth();
+        if(!transformDepthForPlatForm(symbol, obj)) return;
+        auto const& objStr = json::serialize(obj);
+        dataFunc(key,
+                PriceType::depth(),
+                objStr);
+    }
+    else [[unlikely]]
+    {
+        NANO_LOG(DEBUG, "Invalid stream value: %s", stream.c_str());
         return;
     }
-
-    auto key = generateKeyFromMarketUpdate(*priceType, obj);
-    if(!key)
-    {
-        std::cout << "Unable to generate the key for this update: " << update << std::endl;
-        return;
-    }
-    
-    if (!transformForPlatform(obj)) 
-    {
-        std::cout << "Object transformation failed, update was: " << update << std::endl;
-        return;
-    }
-
-    auto objStr = std::make_shared<std::string>(std::move(json::serialize(obj)));
-    auto keyPtr = std::make_shared<std::string>(std::move(*key));
-    
-    dataFunc(*keyPtr,
-            *priceType,
-            *objStr);
 }
 
 void launchWebSocketClient(net::io_context& ioc,
@@ -379,7 +401,7 @@ void launchRestClient(net::io_context& ioc,
         (const beast::error_code& ec){
             if(ec)
             {
-                std::cout << "Error in Rest client init phase : " << ec.message() << std::endl;
+                NANO_LOG(DEBUG, "Error in Rest client init phase: %s", ec.message().c_str());
                 ioc.stop();
             }
             else
@@ -396,9 +418,11 @@ void launchRestClient(net::io_context& ioc,
 
 int main(int argc, char** argv)
 {
+    Logging::init("BinanceMD");
+
     if (argc < 2)
     {
-        std::cerr << "Usage: " << argv[0] << " <available_brokers>" << std::endl;
+        NANO_LOG(DEBUG, "Usage: %s <available_brokers>", argv[0]);
         return 1;
     }
 

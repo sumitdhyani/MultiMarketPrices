@@ -11,4 +11,4 @@ target_include_directories("${PROJECT_NAME}" PUBLIC
                             "${CMAKE_SOURCE_DIR}/ThirdParty"
                             "${CMAKE_SOURCE_DIR}/ThirdParty/modern-cpp-kafka/include")
 
-target_link_libraries("${PROJECT_NAME}" rdkafka++ rdkafka)
+target_link_libraries("${PROJECT_NAME}" rdkafka++ rdkafka NanoLog)

@@ -2,9 +2,8 @@
 #include <functional>
 #include <ranges>
 #include <tuple>
-#include <iostream>
 #include <CPPFsm/FSM.hpp>
-#include <iostream>
+#include <Logging.h>
 #include "PlatformComm.h"
 #include "SMEvents.h"
 
@@ -87,9 +86,8 @@ IEventProcessor<Revoke>
     Transition process(const SubUnsubKey& key,
                         const bool& subscribe) override
     {
-        std::cout << "Operational State: Received sub/unsub event for key: " << *key 
-                << ", action: " << (subscribe? "subscribe" : "unsubscribe") 
-                << std::endl;
+        NANO_LOG(DEBUG, "Operational State: Received sub/unsub event for key: %s, action: %s",
+                (*key).c_str(), subscribe ? "subscribe" : "unsubscribe");
         
 
         subscribe?

@@ -1,5 +1,6 @@
 #pragma once
 #include <boost/beast/core.hpp>
+#include <boost/beast/http/parser_fwd.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
@@ -23,7 +24,8 @@ using tcp       = net::ip::tcp;
 class BinanceRestClient : public std::enable_shared_from_this<BinanceRestClient>
 {
 public:
-    using Callback = std::function<void(const boost::json::object&, const beast::error_code&)>;
+    using Callback = std::function<void(const json::object&, const beast::error_code&)>;
+    using Response = http::response_parser<http::string_body>;
 
     explicit BinanceRestClient(net::strand<net::io_context::executor_type>& strand,
         ssl::context& ctx,
@@ -43,6 +45,7 @@ public:
                    const std::string& interval,
                    int limit,
                    const Callback& cb);
+    void getTradableInstruments(const Callback& cb);
     
     void run();
 
@@ -112,7 +115,6 @@ private:
     bool m_connectedOnce;
 
     beast::flat_buffer m_buffer;
-    http::response<http::string_body> m_response;
     http::request<http::string_body> m_request;
 
     // Internal methods
@@ -129,7 +131,7 @@ private:
     void on_handshake(beast::error_code ec);
     void on_write(beast::error_code ec, std::size_t);
     void do_read();
-    void on_read(beast::error_code ec, std::size_t);
+    void on_read(const Response&, beast::error_code ec, std::size_t);
     void fail(beast::error_code ec, const char* what);
 
     void close_connection();

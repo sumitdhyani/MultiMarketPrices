@@ -17,6 +17,7 @@ using Timer = ULMTTools::Timer;
 namespace json = boost::json;
 std::string appId = "DummyDumper_1";
 std::string appGroup = "DummyDumper_Group";
+std::string targetApp;
 
 Middleware::ProducerFunc producerFunc;
 Middleware::ConsumerFunc groupConsumerFunc;
@@ -72,16 +73,16 @@ void sencCb(const Middleware::RecordMetadata& rm, const Middleware::Error& err) 
 
 void processCommand(const std::string& cmd)
 {
-    static UUIDGenerator gen;   
+    static UUIDGenerator gen;
     auto tokens = cmd
                 | std::views::split(' ')
                 | std::ranges::to<std::vector<std::string>>();
 
     const std::string& action = tokens[0];
     const std::string& type = tokens[1];
-    const std::string& symbol = tokens[2];
     if(action == "s")
     {
+        const std::string& symbol = tokens[2];
         NANO_LOG(DEBUG, "Received command: %s", cmd.c_str());
         const std::string& subscriptionType = (type == "t")? *PriceType::trade() : *PriceType::depth();
         producerFunc("test_topic",
@@ -98,6 +99,7 @@ void processCommand(const std::string& cmd)
     }
     else if(action == "u")
     {
+        const std::string& symbol = tokens[2];
         NANO_LOG(DEBUG, "Received command: %s", cmd.c_str());
         const std::string& subscriptionType = (type == "t")? *PriceType::trade() : *PriceType::depth();
         producerFunc("test_topic",
@@ -115,12 +117,23 @@ void processCommand(const std::string& cmd)
     else if(action == "r")
     {
         NANO_LOG(DEBUG, "Received command: %s", cmd.c_str());
+        if (type == "i")
+        {
+            requestFunc(gen.generate64(),
+                    json::serialize(json::object{{*Tags::message_type(), *MessageType::instrument_request()}}),
+                    targetApp,
+                    sencCb
+            );
+            return;
+        }
         const std::string& subscriptionType = (type == "t")? *PriceType::trade() : *PriceType::depth();
+        const std::string& symbol = tokens[2];
         requestFunc(gen.generate64(),
                     json::serialize(json::object{{*Tags::symbol(), symbol},
-                        {*Tags::subscription_type(), subscriptionType}
+                        {*Tags::subscription_type(), subscriptionType},
+                        {*Tags::message_type(), *MessageType::price_request()}
                     }),
-                    "binance_price_fetcher_node_6",
+                    targetApp,
                     sencCb
         );
     }
@@ -170,11 +183,22 @@ bool validateConfig(const json::object& cfg)
 
 void onConfigUpdate(const json::object& cfg)
 {
-
+    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
+    if (auto const& level_opt = strToLogLevel(logLevelStr); level_opt)
+    {
+        auto const& level = *level_opt;
+        Logging::setLoggingLevel(level);
+    }
 }
 
 int main(int argc, char* argv[])
 {
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <appId>" << std::endl;
+        return 1;
+    }
+    const std::string appId = argv[1];
+
     auto const& cfg_opt = Config::init(appId, onConfigUpdate, validateConfig);
     if (!cfg_opt)
     {
@@ -182,13 +206,6 @@ int main(int argc, char* argv[])
     }
 
     auto const& cfg = *cfg_opt;
-
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <appId>" << std::endl;
-        return 1;
-    }
-
-    const std::string appId = argv[1];
     const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
     auto logLevel_opt = strToLogLevel(logLevelStr);
     if (!logLevel_opt)
@@ -223,7 +240,9 @@ int main(int argc, char* argv[])
     std::string heartBeatStr = getHeartBeatMsg();
     std::string appStr = getDescMsg();
 
-    std::string brokers = "127.0.0.1:9092";
+    const std::string brokers = cfg.at(*ConfigTag::brokers()).as_string().c_str();
+    ::targetApp = cfg.at("targetApp").as_string().c_str();
+
     NANO_LOG(DEBUG, "Initializing middleware");
     Middleware::initializeMiddleWare(appId,
         *AppGroup::DataDumper(),
@@ -243,6 +262,6 @@ int main(int argc, char* argv[])
         },
         responseCb,
         [](const uint64_t&, const std::string&){ NANO_LOG(DEBUG, "Received request without a handler"); },
-        atoi(cfg.at(*ConfigTag::numMinBrokers()).as_string().c_str())
+        cfg.at(*ConfigTag::numMinBrokers()).as_int64()
     );
 }

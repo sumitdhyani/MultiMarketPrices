@@ -39,9 +39,15 @@ struct BinanceTag : StringEnum<MetaEnum::Tags, BinanceTag>
         return instance;
     }
 
-    static BinanceTag const& symbol()
+    static BinanceTag const& symbol_websocket()
     { 
         static BinanceTag instance{"s"};
+        return instance;
+    }
+
+    static BinanceTag const& symbol_restapi()
+    { 
+        static BinanceTag instance{"symbol"};
         return instance;
     }
 
@@ -66,6 +72,12 @@ struct BinanceTag : StringEnum<MetaEnum::Tags, BinanceTag>
     static BinanceTag const& stream()
     { 
         static BinanceTag instance{"stream"};
+        return instance;
+    }
+
+    static BinanceTag const& symbol_list()
+    { 
+        static BinanceTag instance{"symbols"};
         return instance;
     }
 

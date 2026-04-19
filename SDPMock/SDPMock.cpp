@@ -1,3 +1,5 @@
+#include <NanoLogCpp17.h>
+#include <boost/json/serialize.hpp>
 #include <cstdint>
 #include <iostream>
 #include <chrono>
@@ -42,13 +44,6 @@ void msgCb(const std::string& topic,
     const Middleware::KeyValuePairs& headers,
     const std::string& value)
 {
-    // Process the received message (for demonstration, we just print it)
-    NANO_LOG(DEBUG, "Received message from topic: %s, partition: %d, offset: %ld, msgType: %s, key: %s, value: %s",
-            topic.c_str(), partition, offset, msgType.c_str(), key.c_str(), value.c_str());
-    for (const auto& [headerKey, headerValue] : headers)
-    {
-        NANO_LOG(DEBUG, "Header - %s: %s", (*headerKey).c_str(), headerValue.c_str());
-    }
 }
 
 std::string getDescMsg()
@@ -111,8 +106,6 @@ void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
     }
 }
 
-
-
 void runningErrorCb(const Middleware::Error& error) {
     NANO_LOG(DEBUG, "[ERROR CALLBACK] Code: %d | Message: %s | Fatal: %s",
             error.value(), error.message().c_str(),
@@ -164,7 +157,7 @@ int main(int argc, char** argv)
 
     auto const& logLevel = *logLevel_opt;
     Logging::init(appId, logLevel);
-    const uint16_t minBrokers = atoi(cfg.at(*ConfigTag::numMinBrokers()).as_string().c_str());
+    const uint16_t minBrokers = cfg.at(*ConfigTag::numMinBrokers()).as_int64();
 
 
     auto scheduler = std::make_shared<ULMTTools::TaskScheduler>();
@@ -210,6 +203,7 @@ int main(int argc, char** argv)
         },
         responseCb,
         [](const uint64_t& reqId, const std::string& reqpayload){
+            NANO_LOG(DEBUG, "Request received: %s", reqpayload.c_str());
             auto const obj = json::parse(reqpayload).as_object();
             const std::string group = obj.at(*Tags::group_identifier()).as_string().c_str();
             respondFunc(

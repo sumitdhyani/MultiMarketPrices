@@ -1,8 +1,10 @@
+#include <NanoLogCpp17.h>
 #include <memory>
 #include <string.h>
 #include <thread>
 #include <chrono>
 #include "Interface.h"
+#include "Constants.h"
 #include <Logging.h>
 #include <kafka/Log.h>
 
@@ -80,8 +82,9 @@ void consumptionThread(KafkaConsumer& consumer,
             {
                 msgCallback( topic, partition, offset, msgType, key, headers, value);
             });
-
         }
+
+        consumer.commitSync();
     }
 }
 
@@ -354,6 +357,8 @@ void initializeMiddleWare(const std::string& appId,
         {
             throw res.error;
         }
+
+        kafkaConsumerProps.put(*MiddlewareConfig::enable_auto_commit(), "false");
 
         kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appGroup);
         groupConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);

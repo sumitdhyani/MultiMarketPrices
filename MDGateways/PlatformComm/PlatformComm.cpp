@@ -1,6 +1,14 @@
+#include <NanoLog.h>
+#include <NanoLogCpp17.h>
+#include <boost/json/array.hpp>
+#include <boost/json/serialize.hpp>
+#include <cstdint>
+#include <exception>
+#include <string>
 #include<unordered_set>
 #include<unordered_map>
 #include "PlatformComm.h"
+#include "Constants.h"
 #include "PerPartitionSM.h"
 #include <Logging.h>
 
@@ -15,6 +23,7 @@ SubUnsubFunc subFunc;
 SubUnsubFunc unsubFunc;
 KeyGenFunc keyGenFunc;
 GetPriceSnapshotFunc getPriceSnapshotFunc;
+GetInstrumentListFunc getInstrumentListFunc;
 std::unordered_map<std::string, std::unordered_set<std::string>> symbolToDestTopics;
 std::unordered_map<std::string, std::unordered_set<std::string>> destTopicToSymbols;
 
@@ -175,6 +184,10 @@ void msgCb(const std::string& topic,
             sencCb
         );
     }
+    else
+    {
+        NANO_LOG(ERROR, "Unknown msgType received: %s", msgType.c_str());
+    }
 }
 
 std::string getDescMsg()
@@ -192,7 +205,8 @@ void initErrorCb(const Middleware::Error& err)
 }
 
 void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
-{ 
+{
+    NANO_LOG(DEBUG, "Received response: %s", msg.c_str());
     std::error_code ec;
     json::object jsonObj = json::parse(msg, ec).as_object();
     if (ec) {
@@ -273,11 +287,39 @@ void onPriceDataFromExchange(const std::string& key,
     }
 }
 
+void handlePriceRequest(const uint64_t& reqId, const json::object& obj)
+{
+    auto priceType = strToPriceType(obj.at(*Tags::subscription_type()).as_string().c_str());
+    if(!priceType) return;
+            
+    getPriceSnapshotFunc(obj.at(*Tags::symbol()).as_string().c_str(),
+                        *priceType,
+                        [reqId]
+                        (const boost::json::object& snapshot, const std::string& err){
+                            if(!err.empty()) return;
+                            respondFunc(reqId, json::serialize(snapshot), true, sencCb);
+                        }
+                    );
+}
+
+void handleInstrumentListRequest(const uint64_t& reqId, const json::object& obj)
+{
+    NANO_LOG(NOTICE, "Received instrument request");
+    getInstrumentListFunc([reqId](const SymbolStore& symbolStore){
+        NANO_LOG(NOTICE, "Received instrument request, total %d instruments provided by market interface", (int)symbolStore.size());
+        for(auto const& [_, symbolDetails] : symbolStore)
+        {
+            respondFunc(reqId, symbolDetails, false, sencCb);
+        }
+        respondFunc(reqId, "", true, sencCb);
+    });
+}
 
 void PlatformComm::init(const std::string& brokers,
             const SubUnsubFunc& subFunc,
             const SubUnsubFunc& unsubFunc,
             const GetPriceSnapshotFunc& getPriceSnapshotFunc,
+            const GetInstrumentListFunc& getInstrumentListFunc,
             const KeyGenFunc& keyGenFunc,
             const std::function<void(const DataFunc&)>& registrationFunc,
             const std::shared_ptr<ULMTTools::Timer> timer,
@@ -295,6 +337,7 @@ void PlatformComm::init(const std::string& brokers,
     ::unsubFunc = unsubFunc;
     ::keyGenFunc = keyGenFunc;
     ::getPriceSnapshotFunc = getPriceSnapshotFunc;
+    ::getInstrumentListFunc = getInstrumentListFunc;
     
     registrationFunc(
         [workerThread](const std::string& key, const PriceType& priceType, const std::string& update )
@@ -316,8 +359,12 @@ void PlatformComm::init(const std::string& brokers,
         ::producerFunc = producerFunc;
         ::requestFunc = requestFunc;
         ::respondFunc = respondFunc;
+        
+        if (::inTopic != ::appId)
+        {
+            groupConsumerFunc(::inTopic, rebalanceCallback);
+        }
 
-        groupConsumerFunc(::inTopic, rebalanceCallback);
     };
 
     std::string heartBeatStr = getHeartBeatMsg();
@@ -338,18 +385,16 @@ void PlatformComm::init(const std::string& brokers,
         { {MiddlewareConfig::bootstrap_servers(), brokers} },
         responseCb,
         [](const uint64_t& reqId, const std::string& payLoad){
-            json::object obj = json::parse(payLoad).as_object();
-            auto priceType = strToPriceType(obj[*Tags::subscription_type()].as_string().c_str());
-            if(!priceType) return;
-            
-            ::getPriceSnapshotFunc(obj[*Tags::symbol()].as_string().c_str(),
-                                *priceType,
-                                [reqId]
-                                (const boost::json::object& snapshot, const std::string& err){
-                                    if(!err.empty()) return;
-                                    ::respondFunc(reqId, json::serialize(snapshot), true, sencCb);
-                                }
-                            );
+            const json::object obj = json::parse(payLoad).as_object();
+            const std::string msgType = obj.at(*Tags::message_type()).as_string().c_str();
+            if (msgType == *MessageType::price_request())
+            {
+                handlePriceRequest(reqId, obj);
+            }
+            else if (msgType == *MessageType::instrument_request())
+            {
+                handleInstrumentListRequest(reqId, obj);
+            }
         },
         minAvailableBrokers
     );

@@ -1,6 +1,17 @@
+#include <NanoLog.h>
+#include <boost/beast/core/error.hpp>
+#include <boost/json/array.hpp>
+#include <boost/json/object.hpp>
+#include <boost/json/parse.hpp>
+#include <boost/system/detail/error_code.hpp>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <stdatomic.h>
 #include <thread>
 #include <ranges>
 #include "Binance.h"
+#include "Constants.h"
 #include "RestApi.h"
 #include <Logging.h>
 
@@ -21,8 +32,7 @@ BinanceRestClient::BinanceRestClient(net::strand<net::io_context::executor_type>
     , m_connectedOnce(false)
     , m_readyCallback(readyHandler)
     , m_retryIntervalSec(retryIntervalSec)
-{
-}
+{}
 
 void BinanceRestClient::run()
 {
@@ -124,29 +134,54 @@ void BinanceRestClient::on_write(beast::error_code ec, std::size_t)
 
 void BinanceRestClient::do_read()
 {
+    static constexpr uint64_t MB_100 = 100 * 1024 *1024;
+    auto response = std::make_shared<Response>();
+    response->body_limit(MB_100);
     //std::cout << "[Binance REST] awaiting next response..." << std::endl;
     m_buffer.clear();
-    http::async_read(*m_stream, m_buffer, m_response,
-        beast::bind_front_handler(&BinanceRestClient::on_read, shared_from_this()));
+    NANO_LOG(DEBUG, "Doing next read");
+    http::async_read(*m_stream, m_buffer, *response,
+        [response, me = shared_from_this(), this](const beast::error_code& ec, std::size_t bytes){
+            on_read(*response, ec, bytes);
+    });
 }
 
-void BinanceRestClient::on_read(beast::error_code ec, std::size_t bytesRead)
+void BinanceRestClient::on_read(const Response& response, beast::error_code ec, std::size_t bytesRead)
 {
     if (ec) return fail(ec, "read");
 
     boost::json::object result;
-    try {
-        if (!m_response.body().empty())
-            NANO_LOG(DEBUG, "%s", m_response.body().c_str());
-            NANO_LOG(DEBUG, "========================================");
-            result[*BinanceTag::data()] = boost::json::parse(m_response.body());
-    } catch (const std::exception& e) {
+    try
+    {
+        NANO_LOG(DEBUG, "on_read %d bytes", (int)bytesRead);
+        auto const& body = response.get().body();
+        if (!body.empty())
+        {
+            //NANO_LOG(DEBUG, "Body: %s", body.c_str());
+            json::object obj = json::parse(body.c_str()).as_object();
+            if(obj.contains(*BinanceTag::symbol_list()))
+            {
+                result[*Tags::symbol_list()] = obj.at(*BinanceTag::symbol_list());
+            }
+            else
+            {
+                result[*BinanceTag::data()] = obj;
+            }
+        }
+        else
+        {
+            NANO_LOG(ERROR, "Empty response!");
+        }
+
+    }
+    catch (const boost::system::system_error& e)
+    {
         NANO_LOG(DEBUG, "[Binance REST] JSON parse error: %s", e.what());
+        result = {};
     }
 
-    m_response = {};  // Full reset — clear() only clears headers, not body
-    // Call user callback
     auto const& cb = m_queue.front().callback;
+    NANO_LOG(DEBUG, "on_read, calling callback");
     cb(result, ec);
     m_queue.pop();
 
@@ -239,6 +274,11 @@ void BinanceRestClient::getKlines(const std::string& symbol,
                     "&interval=" + interval +
                     "&limit=" + std::to_string(limit);
     launch_request("/klines", http::verb::get, q, cb);
+}
+
+void BinanceRestClient::getTradableInstruments(const Callback& cb)
+{
+    launch_request("/exchangeInfo", http::verb::get, "", cb);
 }
 
 void processCommand(const std::string& command,

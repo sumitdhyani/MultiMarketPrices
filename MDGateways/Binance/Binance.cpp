@@ -1,11 +1,15 @@
 #include "Binance.h"
+#include "Constants.h"
+#include "PlatformComm/PlatformComm.h"
 #include <Logging.h>
 #include <ConfigLib/ConfigLib.h>
+#include <NanoLogCpp17.h>
+#include <boost/json/object.hpp>
+#include <string>
 
 using namespace NanoLog::LogLevels;
 
 DataFunc dataFunc;
-bool middlewareInitialized = false;
 
 using Worker = ULMTTools::WorkerThread;
 using Worker_SPtr = std::shared_ptr<Worker>;
@@ -15,26 +19,29 @@ using Scheduler_SPtr = std::shared_ptr<Scheduler>;
 
 using Timer = ULMTTools::Timer;
 using Timer_SPtr = std::shared_ptr<Timer>;
-
-uint16_t availableBrokers = 0;
+SymbolStore symbolStore;
 
 void initMiddleware(const std::string& brokers,
         const SubUnsubFunc& subFunc,
         const SubUnsubFunc& unsububFunc,
         const GetPriceSnapshotFunc& getPriceSnapshotFunc,
+        const GetInstrumentListFunc& getInstrumentListFunc,
         const KeyGenFunc& keyGenFunc,
         const std::function<void(const DataFunc&)>& registrationFunc,
         const Timer_SPtr& timer,
         const Worker_SPtr& workerThread,
-        const std::string& appId,
-        const std::string& appGroup,
-        const std::string& inTopic,
-        const Middleware::ErrCallback& initErrorCb)
+        const Middleware::ErrCallback& initErrorCb,
+        const json::object& cfg)
 {
+    const std::string appId = cfg.at(*ConfigTag::appId()).as_string().c_str();
+    const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
+    const std::string inTopic = cfg.at(*ConfigTag::md_subscription_topic()).as_string().c_str();
+
     PlatformComm::init(brokers,
         subFunc,
         unsububFunc,
         getPriceSnapshotFunc,
+        getInstrumentListFunc,
         keyGenFunc,
         registrationFunc,
         timer,
@@ -43,7 +50,7 @@ void initMiddleware(const std::string& brokers,
         appGroup,
         inTopic,
         initErrorCb,
-        availableBrokers);
+        cfg.at(*ConfigTag::numMinBrokers()).as_int64());
 }
 
 bool addKey(json::object& update)
@@ -65,7 +72,7 @@ bool addKey(json::object& update)
             return false;
         }
 
-        std::string instrument = update[*BinanceTag::symbol()].as_string().c_str();
+        std::string instrument = update[*BinanceTag::symbol_websocket()].as_string().c_str();
         std::string key = instrument + *(platformPriceType.value());
 
         update[*Tags::subscriptionKey()] = key;
@@ -196,6 +203,12 @@ void getSnapshot(const std::shared_ptr<BinanceRestClient>& client,
     }
 }
 
+void getInstrumentList(const std::shared_ptr<BinanceRestClient>& client,
+    const IntrumentListCallback& intrumentListCallback)
+{
+    intrumentListCallback(symbolStore);
+}
+
 void unsubscribe(const std::shared_ptr<session>& sess,
     const std::string& key)
 {
@@ -223,12 +236,13 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
     const std::shared_ptr<BinanceRestClient>& client,
     net::strand<net::io_context::executor_type>& strand,
     const Timer_SPtr& timer,
-    const Worker_SPtr& workerThread)
+    const Worker_SPtr& workerThread,
+    const json::object& cfg)
 {
-    if (middlewareInitialized) return;
-    middlewareInitialized = true;
+    const std::string brokers = cfg.at(*ConfigTag::brokers()).as_string().c_str();
+    const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
     
-    initMiddleware("127.0.0.1:9092",
+    initMiddleware(brokers,
         [&sess, &strand]
         (const std::string& key){
             net::post(strand, [&sess, key](){
@@ -248,6 +262,10 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
         {
             getSnapshot(client, symbol, priceType, snapshotCallback);
         },
+        [client](const IntrumentListCallback& intrumentListCallback)
+        {
+            getInstrumentList(client, intrumentListCallback);
+        },
         generateKeyFromSubUnsubRequest,
         [](const DataFunc& dataFunc){
             // Registering the callback to receive price data from the exchange
@@ -255,12 +273,10 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
         },
         timer,
         workerThread,
-        "binance_price_fetcher_node_6",
-        "binance_price_fetcher_6",
-        "test_topic",
         [](const Middleware::Error& error){
             NANO_LOG(DEBUG, "Error initializing middleware: %s", error.message().c_str());
-        });
+        },
+        cfg);
 }
 
 bool transformDepthForPlatForm(const std::string& symbol, json::object& obj)
@@ -271,18 +287,18 @@ bool transformDepthForPlatForm(const std::string& symbol, json::object& obj)
 
 bool transformTradeForPlatForm(const std::string& symbol, json::object& obj)
 {
-    if (!obj.contains(*BinanceTag::symbol()) 
+    if (!obj.contains(*BinanceTag::symbol_websocket()) 
         || !obj.contains(*BinanceTag::price())
         || !obj.contains(*BinanceTag::quantity()))
     {
         NANO_LOG(DEBUG, "Invalid format for trade");
         return false;
     }
-    obj[*Tags::symbol()] = obj[*BinanceTag::symbol()];
+    obj[*Tags::symbol()] = obj[*BinanceTag::symbol_websocket()];
     obj[*Tags::price()] = obj[*BinanceTag::price()];
     obj[*Tags::quantity()] = obj[*BinanceTag::quantity()];
 
-    obj.erase(*BinanceTag::symbol());
+    obj.erase(*BinanceTag::symbol_websocket());
     obj.erase(*BinanceTag::price());
     obj.erase(*BinanceTag::quantity());
 
@@ -293,7 +309,7 @@ std::optional<std::string> generateKeyFromMarketUpdate(const PriceType& priceTyp
 {
     try
     {
-        std::string instrument = update.at(*BinanceTag::symbol()).as_string().c_str();
+        std::string instrument = update.at(*BinanceTag::symbol_websocket()).as_string().c_str();
         std::string key = instrument + ":" + *priceType;
         return key;
     }
@@ -360,7 +376,8 @@ void onPriceUpdate(const std::string& update)
 void launchWebSocketClient(net::io_context& ioc,
     ssl::context& ctx,
     net::strand<net::io_context::executor_type>& strand,
-    const std::shared_ptr<BinanceRestClient>& client)
+    const std::shared_ptr<BinanceRestClient>& client,
+    const json::object& cfg)
 {
     char const* host = "stream.binance.com";
     char const* port = "9443";
@@ -375,16 +392,17 @@ void launchWebSocketClient(net::io_context& ioc,
         port,
         path,
         10,
-        [sessHolder, client, &strand, &ioc](const beast::error_code& ec){
+        [sessHolder, client, &strand, &ioc, &cfg](const beast::error_code& ec){
             if (ec){ ioc.stop(); return;}
 
             auto sess = *sessHolder;
-            std::thread([sess, &strand, client](){
+            std::thread([sess, &strand, client, &cfg](){
                 onGatewayConnected(sess,
                     client,
                     strand,
                     std::make_shared<Timer>(std::make_shared<Scheduler>()),    
-                    std::make_shared<Worker>());
+                    std::make_shared<Worker>(),
+                    cfg);
             }).detach();
         }
     );
@@ -393,22 +411,45 @@ void launchWebSocketClient(net::io_context& ioc,
 
 void launchRestClient(net::io_context& ioc,
     ssl::context& ctx,
-    net::strand<net::io_context::executor_type>& strand)
+    net::strand<net::io_context::executor_type>& strand,
+    const json::object& cfg)
 {
     std::shared_ptr<BinanceRestClient> client =
     std::make_shared<BinanceRestClient>(strand,
         ctx,
-        [&ioc, &ctx, &strand, &client]
+        [&ioc, &ctx, &strand, &client, &cfg]
         (const beast::error_code& ec){
             if(ec)
             {
                 NANO_LOG(DEBUG, "Error in Rest client init phase: %s", ec.message().c_str());
                 ioc.stop();
+                return;
             }
-            else
-            {
-                launchWebSocketClient(ioc, ctx, strand, client);
-            }
+            NANO_LOG(DEBUG, "Fetching instrument list");
+            client->getTradableInstruments(
+                [&ioc, &ctx, &strand, &client, &cfg]
+                (const json::object& obj, const beast::error_code& ec)
+                {
+                    if(ec)
+                    {
+                        NANO_LOG(ERROR, "Error whlie fetching instrument list, details: %s", ec.message().c_str());
+                        ioc.stop();
+                        return;
+                    }
+                    NANO_LOG(DEBUG, "Received instrument list");
+                    auto const& symbols = obj.at(*BinanceTag::symbol_list()).as_array();
+                    NANO_LOG(DEBUG, "Received symbol list with %d instruments from exchange", (int)symbols.size());
+                    for(auto const& symbol : symbols)
+                    {
+                        //auto const& str = json::serialize(symbol);
+                        //NANO_LOG(DEBUG, "Symbol info received: %s", str.c_str());
+                        const std::string id = symbol.as_object().at(*BinanceTag::symbol_restapi()).as_string().c_str();
+                        symbolStore[id] = json::serialize(symbol);
+                    }
+
+                    NANO_LOG(ERROR, "Launching WebSocker client");
+                    launchWebSocketClient(ioc, ctx, strand, client, cfg);
+            });
         },
         10
     );
@@ -438,8 +479,8 @@ int main(int argc, char** argv)
         std::cerr << "Usage: " << argv[0] << " <appId>" << std::endl;
         return 1;
     }
-    const std::string appId = argv[1];
 
+    const std::string appId = argv[1];
     auto const& cfg_opt = Config::init(appId, onConfigUpdate, validateConfig);
     if (!cfg_opt)
     {
@@ -464,7 +505,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    ::availableBrokers = atoi(cfg.at(*ConfigTag::numMinBrokers()).as_string().c_str());
     char const* host = "stream.binance.com";
     char const* port = "9443";
     auto const path = "/stream";
@@ -476,7 +516,7 @@ int main(int argc, char** argv)
     ssl::context ctx{ssl::context::tlsv12_client};
     net::strand<net::io_context::executor_type> strand{ioc.get_executor()};
 
-    launchRestClient(ioc, ctx, strand);
+    launchRestClient(ioc, ctx, strand, cfg);
 
     return 0;
 }

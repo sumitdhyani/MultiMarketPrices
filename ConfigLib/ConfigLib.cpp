@@ -142,18 +142,26 @@ bool validate(const json::object& obj, const std::string& appId)
 {
     if (!obj.contains(*ConfigTag::groups()))
     {
-        NANO_LOG(DEBUG, "App section absent for app: %s", appId.c_str());
+        NANO_LOG(DEBUG, "Groups section absent for app: %s", appId.c_str());
         return false;
     }
 
+    if (!obj.contains(*ConfigTag::apps()))
+    {
+        NANO_LOG(DEBUG, "Apps section absent for app: %s", appId.c_str());
+        return false;
+    }
+
+    auto const& apps = obj.at(*ConfigTag::apps()).as_object();
     auto const& groups = obj.at(*ConfigTag::groups()).as_object();
-    if (!obj.contains(appId))
+
+    if (!apps.contains(appId))
     {
         NANO_LOG(DEBUG, "App section absent for app: %s", appId.c_str());
         return false;
     }
 
-    auto const& appSection = obj.at(appId).as_object();
+    auto const& appSection = apps.at(appId).as_object();
     if (!appSection.contains(*ConfigTag::group()))
     {
         NANO_LOG(DEBUG, "Group identifier missing for app: %s", appId.c_str());
@@ -163,7 +171,7 @@ bool validate(const json::object& obj, const std::string& appId)
     const std::string group = appSection.at(*ConfigTag::group()).as_string().c_str();
     if (!groups.contains(group))
     {
-        NANO_LOG(DEBUG, "Group identifier missing for app: %s", appId.c_str());
+        NANO_LOG(DEBUG, "Non-existent group for app: %s", appId.c_str());
         return false;
     }
 
@@ -178,7 +186,9 @@ std::optional<json::object> createConfig(const std::string& appId)
     auto& config = *config_opt;
     if (!validate(config, appId)) return std::nullopt;
 
-    return flatten(config, appId);
+    auto flattenned = std::move(flatten(config, appId));
+    flattenned[*ConfigTag::appId()] = appId;
+    return flattenned;
 }
 
 void onConfigUpdate(const std::string& appId,

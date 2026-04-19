@@ -21,7 +21,8 @@ enum class MetaEnum
     OptionType,
     PriceType,
     AppGroup,
-    LogLevel
+    LogLevel,
+    Exchanges
 };
 
 enum class LoggingLevel
@@ -130,6 +131,30 @@ struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
     static MessageType const& response()
     { 
         static MessageType instance{"response"};
+        return instance;
+    }
+
+    static MessageType const& price_request()
+    { 
+        static MessageType instance{"price_request"};
+        return instance;
+    }
+
+    static MessageType const& price_response()
+    { 
+        static MessageType instance{"price_response"};
+        return instance;
+    }
+
+    static MessageType const& instrument_request()
+    { 
+        static MessageType instance{"instrument_request"};
+        return instance;
+    }
+
+    static MessageType const& instrument_response()
+    { 
+        static MessageType instance{"instrument_response"};
         return instance;
     }
 
@@ -286,6 +311,15 @@ struct InstrumentAttributes : StringEnum<MetaEnum::InstrumentAttributes, Instrum
     }
 };
 
+struct Exchanges : StringEnum<MetaEnum::Exchanges, InstrumentAttributes>
+{
+    static InstrumentAttributes const& BINANCE()
+    {
+        static InstrumentAttributes instance{"BINANCE"};
+        return instance;
+    }
+};
+
 struct AppGroup : StringEnum<MetaEnum::AppGroup, AppGroup>
 {
     static AppGroup const& dummy()
@@ -297,6 +331,13 @@ struct AppGroup : StringEnum<MetaEnum::AppGroup, AppGroup>
     static AppGroup const& DataDumper()
     {
         static AppGroup instance{"DataDumper"};
+        return instance;
+    }
+
+    // request and subscription router
+    static AppGroup const& RSRouter()
+    {
+        static AppGroup instance{"RSRouter"};
         return instance;
     }
 
@@ -410,6 +451,12 @@ struct Tags : StringEnum<MetaEnum::Tags, Tags>
         static Tags instance{"exchange"};
         return instance;
     }
+
+    static Tags const& symbol_list()
+    { 
+        static Tags instance{"symbols"};
+        return instance;
+    }
 };
 
 struct TagValues : StringEnum<MetaEnum::TagValues, Tags>
@@ -471,9 +518,45 @@ struct ConfigTag : StringEnum<MetaEnum::ConfigTags, ConfigTag>
         return instance;
     }
 
+    static ConfigTag const& appId()
+    { 
+        static ConfigTag instance{"appId"};
+        return instance;
+    }
+
+    static ConfigTag const& md_subscription_topic()
+    { 
+        static ConfigTag instance{"md_subscription_topic"};
+        return instance;
+    }
+
+    static ConfigTag const& md_request_topic()
+    { 
+        static ConfigTag instance{"md_request_topic"};
+        return instance;
+    }
+
     static ConfigTag const& brokers()
     { 
         static ConfigTag instance{"brokers"};
+        return instance;
+    }
+
+    static ConfigTag const& exchange_to_topic_mapping()
+    { 
+        static ConfigTag instance{"exchange_to_topic_mapping"};
+        return instance;
+    }
+
+    static ConfigTag const& routing_requests()
+    { 
+        static ConfigTag instance{"requests"};
+        return instance;
+    }
+
+    static ConfigTag const& routing_subscriptions()
+    { 
+        static ConfigTag instance{"subscriptions"};
         return instance;
     }
 

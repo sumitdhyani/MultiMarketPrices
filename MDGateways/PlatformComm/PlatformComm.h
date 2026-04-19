@@ -13,6 +13,7 @@
 #include <Constants.h>
 #include <UUIDGen.hpp>
 #include <TypeWrapper.h>
+#include <unordered_map>
 
 namespace json = boost::json;
 
@@ -23,10 +24,15 @@ struct SubUnsubKey : TypeWrapper<std::string> {};
 using  KeyGenFunc = std::function<std::optional<std::string>(const json::object&)>;
 using SubUnsubFunc = std::function<void(const std::string&)>;
 using SnapshotCallback = std::function<void(const boost::json::object&, const std::string&)>;
+
+using SymbolStore = std::unordered_map<std::string, std::string>;
+using IntrumentListCallback = std::function<void(const SymbolStore&)>;
+using GetInstrumentListFunc = std::function<void(const IntrumentListCallback&)>;
+
 using GetPriceSnapshotFunc = std::function<void(const std::string&, const PriceType&, const SnapshotCallback&)>;
 using DataFunc = std::function<void(const std::string&, // Key
                                     const PriceType&,
-                                    const std::string&)>; // Update 
+                                    const std::string&)>; // Update
 
 
 
@@ -36,6 +42,7 @@ namespace PlatformComm
             const SubUnsubFunc& subFunc,
             const SubUnsubFunc& unsububFunc,
             const GetPriceSnapshotFunc& getPriceSnapshotFunc,
+            const GetInstrumentListFunc& getInstrumentListFunc,
             const KeyGenFunc& keyGenFunc,
             const std::function<void(const DataFunc&)>& registrationFunc,
             const std::shared_ptr<ULMTTools::Timer> timer,

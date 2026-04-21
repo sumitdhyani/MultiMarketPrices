@@ -21,7 +21,7 @@ struct TypeWrapper
     TypeWrapper(const T& obj) : m_obj(obj)
     {}
 
-    TypeWrapper(T&& obj) : m_obj(obj)
+    TypeWrapper(T&& obj) : m_obj(std::move(obj))
     {}
 
     TypeWrapper(TypeWrapper&&) = default;
@@ -41,7 +41,7 @@ struct TypeWrapper
 
     TypeWrapper& operator=(T&& obj)
     {
-        m_obj = obj;
+        m_obj = std::move(obj);
         return *this;
     }
 

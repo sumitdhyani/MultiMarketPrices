@@ -1,6 +1,7 @@
 #include "Binance.h"
 #include "Constants.h"
 #include "PlatformComm/PlatformComm.h"
+#include <MDGatewayRouterConfig.h>
 #include <Logging.h>
 #include <ConfigLib/ConfigLib.h>
 #include <NanoLogCpp17.h>
@@ -8,8 +9,6 @@
 #include <string>
 
 using namespace NanoLog::LogLevels;
-
-DataFunc dataFunc;
 
 using Worker = ULMTTools::WorkerThread;
 using Worker_SPtr = std::shared_ptr<Worker>;
@@ -21,13 +20,9 @@ using Timer = ULMTTools::Timer;
 using Timer_SPtr = std::shared_ptr<Timer>;
 SymbolStore symbolStore;
 
-void initMiddleware(const std::string& brokers,
-        const SubUnsubFunc& subFunc,
-        const SubUnsubFunc& unsububFunc,
-        const GetPriceSnapshotFunc& getPriceSnapshotFunc,
-        const GetInstrumentListFunc& getInstrumentListFunc,
+void initMiddleware(const std::shared_ptr<MDRoutingMethods>& routing,
         const KeyGenFunc& keyGenFunc,
-        const std::function<void(const DataFunc&)>& registrationFunc,
+        const std::string& brokers,
         const Timer_SPtr& timer,
         const Worker_SPtr& workerThread,
         const Middleware::ErrCallback& initErrorCb,
@@ -37,13 +32,9 @@ void initMiddleware(const std::string& brokers,
     const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
     const std::string inTopic = cfg.at(*ConfigTag::md_subscription_topic()).as_string().c_str();
 
-    PlatformComm::init(brokers,
-        subFunc,
-        unsububFunc,
-        getPriceSnapshotFunc,
-        getInstrumentListFunc,
+    PlatformComm::init(routing,
         keyGenFunc,
-        registrationFunc,
+        brokers,
         timer,
         workerThread,
         appId,
@@ -237,42 +228,84 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
     net::strand<net::io_context::executor_type>& strand,
     const Timer_SPtr& timer,
     const Worker_SPtr& workerThread,
+    const std::shared_ptr<MDRoutingMethods>& routing,
     const json::object& cfg)
 {
     const std::string brokers = cfg.at(*ConfigTag::brokers()).as_string().c_str();
-    const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
-    
-    initMiddleware(brokers,
-        [&sess, &strand]
-        (const std::string& key){
-            net::post(strand, [&sess, key](){
-                NANO_LOG(DEBUG, "Subscribing to %s", key.c_str());
-                subscribe(sess, key);
-            });  
-        },
-        [&sess, &strand](const std::string& key){
-            net::post(strand, [&sess, key](){
-                    NANO_LOG(DEBUG, "Unsubscribing from %s", key.c_str());
-                    unsubscribe(sess, key);
+
+    static const uint64_t kBinanceId = 1;
+
+    // Register as responders for each request type
+    routing->reqResMethods.registerAsResponder(kBinanceId, MDReqType::TradeSnapshot,
+        [client](const MDReqVariant& data, const MDResponseHandler& handler) {
+            const TradeSnapshotRequest& req = std::get<TradeSnapshotRequest>(data);
+            getSnapshot(client, *req, PriceType::trade(),
+                [handler](const boost::json::object& snapshot, const std::string& err) {
+                    if (!err.empty()) return;
+                    handler(true, MDRespVariant{TradeSnapshot{json::serialize(snapshot)}});
+                }
+            );
+        }
+    );
+
+    routing->reqResMethods.registerAsResponder(kBinanceId, MDReqType::DepthSnapshot,
+        [client](const MDReqVariant& data, const MDResponseHandler& handler) {
+            const DepthSnapshotRequest& req = std::get<DepthSnapshotRequest>(data);
+            getSnapshot(client, *req, PriceType::depth(),
+                [handler](const boost::json::object& snapshot, const std::string& err) {
+                    if (!err.empty()) return;
+                    handler(true, MDRespVariant{DepthSnapshot{json::serialize(snapshot)}});
+                }
+            );
+        }
+    );
+
+    routing->reqResMethods.registerAsResponder(kBinanceId, MDReqType::InstrumentList,
+        [client](const MDReqVariant&, const MDResponseHandler& handler) {
+            getInstrumentList(client, [handler](const SymbolStore& symbolStore) {
+                NANO_LOG(NOTICE, "Providing instrument list, total %d instruments", (int)symbolStore.size());
+                for (auto const& [_, symbolDetails] : symbolStore)
+                {
+                    handler(false, MDRespVariant{InstrumentRecord{symbolDetails}});
+                }
+                handler(true, MDRespVariant{InstrumentRecord{""}});
             });
-        },
-        [client](const std::string& symbol,
-            const PriceType& priceType,
-            const SnapshotCallback& snapshotCallback)
-        {
-            getSnapshot(client, symbol, priceType, snapshotCallback);
-        },
-        [client](const IntrumentListCallback& intrumentListCallback)
-        {
-            getInstrumentList(client, intrumentListCallback);
-        },
-        generateKeyFromSubUnsubRequest,
-        [](const DataFunc& dataFunc){
-            // Registering the callback to receive price data from the exchange
-            ::dataFunc = dataFunc;
-        },
-        timer,
-        workerThread,
+        }
+    );
+
+    // Subscribe to ALL sub/unsub commands from PlatformComm
+    routing->pubSubMethods.consumeAllControl(kBinanceId,
+        [sess, &strand](const std::string& key, const SubUnsubVariant& cmd) {
+            std::visit(overload{
+                [&](const SubRequest&) {
+                    net::post(strand, [sess, key]() {
+                        NANO_LOG(DEBUG, "Subscribing to %s", key.c_str());
+                        subscribe(sess, key);
+                    });
+                },
+                [&](const UnsubRequest&) {
+                    net::post(strand, [sess, key]() {
+                        NANO_LOG(DEBUG, "Unsubscribing from %s", key.c_str());
+                        unsubscribe(sess, key);
+                    });
+                }
+            }, cmd);
+        }
+    );
+
+    KeyGenFunc keyGenFunc = [](const std::variant<MDUpdateVariant, SubUnsubVariant>& v) -> std::optional<std::string> {
+        return std::visit(overload{
+            [](const MDUpdateVariant&) -> std::optional<std::string> { return std::nullopt; },
+            [](const SubUnsubVariant& suv) -> std::optional<std::string> {
+                return std::visit(overload{
+                    [](const SubRequest& req)   { return generateKeyFromSubUnsubRequest(*req); },
+                    [](const UnsubRequest& req) { return generateKeyFromSubUnsubRequest(*req); }
+                }, suv);
+            }
+        }, v);
+    };
+
+    initMiddleware(routing, keyGenFunc, brokers, timer, workerThread,
         [](const Middleware::Error& error){
             NANO_LOG(DEBUG, "Error initializing middleware: %s", error.message().c_str());
         },
@@ -320,7 +353,7 @@ std::optional<std::string> generateKeyFromMarketUpdate(const PriceType& priceTyp
     }
 }
 
-void onPriceUpdate(const std::string& update)
+void onPriceUpdate(const std::shared_ptr<MDRoutingMethods>& routing, const std::string& update)
 {
     auto obj = json::parse(update).as_object();
     
@@ -352,19 +385,15 @@ void onPriceUpdate(const std::string& update)
     {
         key = symbol + ":" + *PriceType::trade();
         if(!transformTradeForPlatForm(symbol, obj)) return;
-        auto const& objStr = json::serialize(obj);
-        dataFunc(key,
-                PriceType::trade(),
-                objStr);
+        auto objStr = json::serialize(obj);
+        routing->pubSubMethods.produceUpdate(key, MDUpdateVariant{TradeUpdate{std::move(objStr)}});
     }
     else if (stream.find(*PriceType::depth()) != std::string::npos)
     {
         key = symbol + ":" + *PriceType::depth();
         if(!transformDepthForPlatForm(symbol, obj)) return;
-        auto const& objStr = json::serialize(obj);
-        dataFunc(key,
-                PriceType::depth(),
-                objStr);
+        auto objStr = json::serialize(obj);
+        routing->pubSubMethods.produceUpdate(key, MDUpdateVariant{DepthUpdate{std::move(objStr)}});
     }
     else [[unlikely]]
     {
@@ -383,25 +412,31 @@ void launchWebSocketClient(net::io_context& ioc,
     char const* port = "9443";
     auto const path = "/stream";
 
+    auto updateRouter  = std::make_shared<MDUpdateRouter>();
+    auto controlRouter = std::make_shared<MDControlRouter>();
+    auto reqResRouter  = std::make_shared<MDReqResRouter>();
+    auto routing = std::make_shared<MDRoutingMethods>(updateRouter, controlRouter, reqResRouter);
+
     auto sessHolder = std::make_shared<std::shared_ptr<session>>();
 
     *sessHolder = std::make_shared<session>(strand,
-        ctx, 
-        onPriceUpdate,
+        ctx,
+        [routing](const std::string& update) { onPriceUpdate(routing, update); },
         host,
         port,
         path,
         10,
-        [sessHolder, client, &strand, &ioc, &cfg](const beast::error_code& ec){
+        [sessHolder, client, &strand, &ioc, &cfg, routing](const beast::error_code& ec){
             if (ec){ ioc.stop(); return;}
 
             auto sess = *sessHolder;
-            std::thread([sess, &strand, client, &cfg](){
+            std::thread([sess, &strand, client, &cfg, routing](){
                 onGatewayConnected(sess,
                     client,
                     strand,
-                    std::make_shared<Timer>(std::make_shared<Scheduler>()),    
+                    std::make_shared<Timer>(std::make_shared<Scheduler>()),
                     std::make_shared<Worker>(),
+                    routing,
                     cfg);
             }).detach();
         }

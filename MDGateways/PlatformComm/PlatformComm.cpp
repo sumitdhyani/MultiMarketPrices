@@ -19,11 +19,8 @@ namespace json = boost::json;
 std::string appId;
 std::string appGroup;
 std::string inTopic;
-SubUnsubFunc subFunc;
-SubUnsubFunc unsubFunc;
-KeyGenFunc keyGenFunc;
-GetPriceSnapshotFunc getPriceSnapshotFunc;
-GetInstrumentListFunc getInstrumentListFunc;
+static std::shared_ptr<MDRoutingMethods> gRouting;
+static KeyGenFunc gKeyGenFunc;
 std::unordered_map<std::string, std::unordered_set<std::string>> symbolToDestTopics;
 std::unordered_map<std::string, std::unordered_set<std::string>> destTopicToSymbols;
 
@@ -48,8 +45,12 @@ void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
         {
             auto newFsm =
             std::make_unique<PerPartitionFSM>(partition,
-                subFunc,
-                unsubFunc
+                [](const std::string& key){
+                    gRouting->pubSubMethods.produceControl(key, SubUnsubVariant{SubRequest{}});
+                },
+                [](const std::string& key){
+                    gRouting->pubSubMethods.produceControl(key, SubUnsubVariant{UnsubRequest{}});
+                }
             );
 
             static UUIDGenerator gen;
@@ -153,20 +154,23 @@ void msgCb(const std::string& topic,
         if (it == partitionFSMs.end()) return;
 
         auto obj = json::parse(msg).as_object();
-        auto key = keyGenFunc(obj);
-        if (!key)   return;
-
         bool isSub = msgType == *MessageType::subscribe();
+        auto routingKey = gKeyGenFunc(
+            std::variant<MDUpdateVariant, SubUnsubVariant>{
+                isSub ? SubUnsubVariant{SubRequest{obj}} : SubUnsubVariant{UnsubRequest{obj}}
+            });
+        if (!routingKey) return;
+
         const std::string destTopic = obj.at(*Tags::destination_topic()).as_string().c_str();
 
-        if (!handleBookKeeping(*key, destTopic, isSub))
+        if (!handleBookKeeping(*routingKey, destTopic, isSub))
         {
-            NANO_LOG(DEBUG, "BookKeeping failed for key: %s and destTopic: %s", (*key).c_str(), destTopic.c_str());
+            NANO_LOG(DEBUG, "BookKeeping failed for key: %s and destTopic: %s", (*routingKey).c_str(), destTopic.c_str());
             return;
         }
         
         auto& [_, existingFSM] = *it;
-        existingFSM->handleEvent(SubUnsubKey(*key), isSub);
+        existingFSM->handleEvent(SubUnsubKey(*routingKey), isSub);
         
         std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
         producerFunc(*Topic::pubSub_sync_data(),
@@ -174,7 +178,7 @@ void msgCb(const std::string& topic,
             appId,
             json::serialize(json::object{
                 {*Tags::group_identifier(), group},
-                {*Tags::subscriptionKey(), *key},
+                {*Tags::subscriptionKey(), *routingKey},
                 {*Tags::action(), isSub ?
                     *TagValues::action_subscribe() :
                     *TagValues::action_unsubscribe()},
@@ -263,22 +267,17 @@ void runningErrorCb(const Middleware::Error& error) {
     }
 }
 
-void onPriceDataFromExchange(const std::string& key,
-                            const PriceType& priceType,
-                            const std::string& update)
+void onPriceDataFromExchange(const std::string& key, const MDUpdateVariant& data)
 {
     if (auto it = symbolToDestTopics.find(key); it != symbolToDestTopics.end())
     {
+        auto [msgType, payload] = std::visit(overload{
+            [](const TradeUpdate& u) { return std::pair{MessageType::trade_update(), *u}; },
+            [](const DepthUpdate& u) { return std::pair{MessageType::depth_update(), *u}; }
+        }, data);
         for (auto const& destTopic : it->second)
         {
-            producerFunc(destTopic,
-                priceType == *priceType ?
-                    MessageType::depth_update() :
-                    MessageType::trade_update(),
-                key,
-                update,
-                {}, 
-                sencCb);
+            producerFunc(destTopic, msgType, key, payload, {}, sencCb);
         }
     }
     else
@@ -291,37 +290,42 @@ void handlePriceRequest(const uint64_t& reqId, const json::object& obj)
 {
     auto priceType = strToPriceType(obj.at(*Tags::subscription_type()).as_string().c_str());
     if(!priceType) return;
-            
-    getPriceSnapshotFunc(obj.at(*Tags::symbol()).as_string().c_str(),
-                        *priceType,
-                        [reqId]
-                        (const boost::json::object& snapshot, const std::string& err){
-                            if(!err.empty()) return;
-                            respondFunc(reqId, json::serialize(snapshot), true, sencCb);
-                        }
-                    );
+
+    bool isTrade = (*priceType == *PriceType::trade());
+    MDReqType reqType = isTrade ? MDReqType::TradeSnapshot : MDReqType::DepthSnapshot;
+    std::string symbol = obj.at(*Tags::symbol()).as_string().c_str();
+    MDReqVariant reqData = isTrade
+        ? MDReqVariant{TradeSnapshotRequest{symbol}}
+        : MDReqVariant{DepthSnapshotRequest{symbol}};
+
+    gRouting->reqResMethods.request(reqId, reqType, reqData,
+        [reqId](bool isLast, const MDRespVariant& resp) {
+            std::visit(overload{
+                [&](const TradeSnapshot& ts)   { respondFunc(reqId, *ts, isLast, sencCb); },
+                [&](const DepthSnapshot& ds)   { respondFunc(reqId, *ds, isLast, sencCb); },
+                [](const InstrumentRecord&) {}
+            }, resp);
+        }
+    );
 }
 
 void handleInstrumentListRequest(const uint64_t& reqId, const json::object& obj)
 {
     NANO_LOG(NOTICE, "Received instrument request");
-    getInstrumentListFunc([reqId](const SymbolStore& symbolStore){
-        NANO_LOG(NOTICE, "Received instrument request, total %d instruments provided by market interface", (int)symbolStore.size());
-        for(auto const& [_, symbolDetails] : symbolStore)
-        {
-            respondFunc(reqId, symbolDetails, false, sencCb);
+    gRouting->reqResMethods.request(reqId, MDReqType::InstrumentList,
+        MDReqVariant{InstrumentListRequest{}},
+        [reqId](bool isLast, const MDRespVariant& resp) {
+            std::visit(overload{
+                [&](const InstrumentRecord& ir) { respondFunc(reqId, *ir, isLast, sencCb); },
+                [](const auto&) {}
+            }, resp);
         }
-        respondFunc(reqId, "", true, sencCb);
-    });
+    );
 }
 
-void PlatformComm::init(const std::string& brokers,
-            const SubUnsubFunc& subFunc,
-            const SubUnsubFunc& unsubFunc,
-            const GetPriceSnapshotFunc& getPriceSnapshotFunc,
-            const GetInstrumentListFunc& getInstrumentListFunc,
+void PlatformComm::init(const std::shared_ptr<MDRoutingMethods>& routing,
             const KeyGenFunc& keyGenFunc,
-            const std::function<void(const DataFunc&)>& registrationFunc,
+            const std::string& brokers,
             const std::shared_ptr<ULMTTools::Timer> timer,
             const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
             const std::string& appId,
@@ -333,17 +337,14 @@ void PlatformComm::init(const std::string& brokers,
     ::appId = appId;
     ::appGroup = appGroup;
     ::inTopic = inTopic;
-    ::subFunc = subFunc;
-    ::unsubFunc = unsubFunc;
-    ::keyGenFunc = keyGenFunc;
-    ::getPriceSnapshotFunc = getPriceSnapshotFunc;
-    ::getInstrumentListFunc = getInstrumentListFunc;
-    
-    registrationFunc(
-        [workerThread](const std::string& key, const PriceType& priceType, const std::string& update )
-        {
-            workerThread->push([key, priceType, update](){
-                onPriceDataFromExchange(key, priceType, update);
+    ::gRouting = routing;
+    ::gKeyGenFunc = keyGenFunc;
+
+    static const uint64_t kPlatformCommId = 0;
+    routing->pubSubMethods.consumeAllUpdate(kPlatformCommId,
+        [workerThread](const std::string& key, const MDUpdateVariant& data) {
+            workerThread->push([key, data]() {
+                onPriceDataFromExchange(key, data);
             });
         }
     );

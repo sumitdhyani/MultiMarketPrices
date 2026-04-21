@@ -14,37 +14,27 @@
 #include <UUIDGen.hpp>
 #include <TypeWrapper.h>
 #include <unordered_map>
+#include <MDGatewayRouterConfig.h>
 
 namespace json = boost::json;
 
-// Fomat:
+// Format:
 // <instrumentId>:<priceType>:<InstrumentType>:<OptionType>
 // option type should only be there if instrument type is option
 struct SubUnsubKey : TypeWrapper<std::string> {};
-using  KeyGenFunc = std::function<std::optional<std::string>(const json::object&)>;
 using SubUnsubFunc = std::function<void(const std::string&)>;
 using SnapshotCallback = std::function<void(const boost::json::object&, const std::string&)>;
 
 using SymbolStore = std::unordered_map<std::string, std::string>;
 using IntrumentListCallback = std::function<void(const SymbolStore&)>;
 using GetInstrumentListFunc = std::function<void(const IntrumentListCallback&)>;
-
 using GetPriceSnapshotFunc = std::function<void(const std::string&, const PriceType&, const SnapshotCallback&)>;
-using DataFunc = std::function<void(const std::string&, // Key
-                                    const PriceType&,
-                                    const std::string&)>; // Update
-
-
 
 namespace PlatformComm
 {
-    void init(const std::string& brokers,
-            const SubUnsubFunc& subFunc,
-            const SubUnsubFunc& unsububFunc,
-            const GetPriceSnapshotFunc& getPriceSnapshotFunc,
-            const GetInstrumentListFunc& getInstrumentListFunc,
+    void init(const std::shared_ptr<MDRoutingMethods>& routing,
             const KeyGenFunc& keyGenFunc,
-            const std::function<void(const DataFunc&)>& registrationFunc,
+            const std::string& brokers,
             const std::shared_ptr<ULMTTools::Timer> timer,
             const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
             const std::string& appId,

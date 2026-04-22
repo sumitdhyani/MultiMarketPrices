@@ -524,15 +524,9 @@ struct ConfigTag : StringEnum<MetaEnum::ConfigTags, ConfigTag>
         return instance;
     }
 
-    static ConfigTag const& md_subscription_topic()
+    static ConfigTag const& in_topic()
     { 
-        static ConfigTag instance{"md_subscription_topic"};
-        return instance;
-    }
-
-    static ConfigTag const& md_request_topic()
-    { 
-        static ConfigTag instance{"md_request_topic"};
+        static ConfigTag instance{"in_topic"};
         return instance;
     }
 

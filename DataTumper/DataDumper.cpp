@@ -226,7 +226,8 @@ int main(int argc, char* argv[])
             const Middleware::ConsumerFunc& groupConsumerFunc,
             const Middleware::ConsumerFunc& individualConsumerFunc,
             const Middleware::RequestFunc& requestFunc,
-        const Middleware::RespondFunc& respondFunc)
+            const Middleware::RespondFunc& respondFunc,
+            const Middleware::ShutdownFunc& /*shutdownFunc*/)
     {
         ::producerFunc = producerFunc;
         ::groupConsumerFunc = groupConsumerFunc;

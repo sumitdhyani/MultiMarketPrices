@@ -1,4 +1,6 @@
 cmake_minimum_required(VERSION 3.5.0)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 project(MultiMarketPrices)
 
 if(NOT CMAKE_BUILD_TYPE )
@@ -17,3 +19,4 @@ add_subdirectory(DataTumper)
 add_subdirectory(MDGateways)
 add_subdirectory(SDPMock)
 add_subdirectory(ConfigLib)
+add_subdirectory(Tests)

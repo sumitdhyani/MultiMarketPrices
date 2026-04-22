@@ -316,7 +316,10 @@ void handleInstrumentListRequest(const uint64_t& reqId, const json::object& obj)
         MDReqVariant{InstrumentListRequest{}},
         [reqId](bool isLast, const MDRespVariant& resp) {
             std::visit(overload{
-                [&](const InstrumentRecord& ir) { respondFunc(reqId, *ir, isLast, sencCb); },
+                [&](const InstrumentRecord& ir) { 
+                    NANO_LOG(DEBUG, "Processing instrument record");
+                    respondFunc(reqId, *ir, isLast, sencCb); 
+                },
                 [](const auto&) {}
             }, resp);
         }
@@ -355,7 +358,8 @@ void PlatformComm::init(const std::shared_ptr<MDRoutingMethods>& routing,
             const Middleware::ConsumerFunc& groupConsumerFunc,
             const Middleware::ConsumerFunc& individualConsumerFunc,
             const Middleware::RequestFunc& requestFunc,
-        const Middleware::RespondFunc& respondFunc)
+            const Middleware::RespondFunc& respondFunc,
+            const Middleware::ShutdownFunc& /*shutdownFunc*/)
     {
         ::producerFunc = producerFunc;
         ::requestFunc = requestFunc;

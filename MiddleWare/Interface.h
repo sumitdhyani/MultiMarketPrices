@@ -1,4 +1,5 @@
 #pragma once
+#include "kafka/KafkaException.h"
 #include <string>
 #include <optional>
 #include <functional>
@@ -74,15 +75,18 @@ namespace Middleware
                                                 const std::string&,
                                                 const int32_t&)>;
 
-    using ConsumerFunc = std::function<APIError (const std::string&,
+    using ConsumerFunc = std::function<Error (const std::string&,
                                                 const std::optional<RebalanceCallback>& rebalanceCallback)>;
+
+    using ShutdownFunc = std::function<void()>;
 
     using InitCallback = std::function<void(const ProducerFunc&,
                                             const LowLevelProducerFunc&,
                                             const ConsumerFunc&,    // To subscribe as group
                                             const ConsumerFunc&,    // To subscribe as individual
                                             const RequestFunc&,
-                                            const RespondFunc&)>;
+                                            const RespondFunc&,
+                                            const ShutdownFunc&)>;
 
     void initializeMiddleWare(const std::string& appId,
                             const std::string& appType,

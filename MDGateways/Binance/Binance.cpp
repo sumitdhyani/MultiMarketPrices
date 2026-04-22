@@ -30,7 +30,7 @@ void initMiddleware(const std::shared_ptr<MDRoutingMethods>& routing,
 {
     const std::string appId = cfg.at(*ConfigTag::appId()).as_string().c_str();
     const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
-    const std::string inTopic = cfg.at(*ConfigTag::md_subscription_topic()).as_string().c_str();
+    const std::string inTopic = cfg.at(*ConfigTag::in_topic()).as_string().c_str();
 
     PlatformComm::init(routing,
         keyGenFunc,

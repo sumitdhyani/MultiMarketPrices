@@ -1,5 +1,8 @@
 #include <NanoLogCpp17.h>
+#include <atomic>
+#include <librdkafka/rdkafka.h>
 #include <memory>
+#include <semaphore>
 #include <string.h>
 #include <thread>
 #include <chrono>
@@ -37,12 +40,94 @@ using PendingRequestBook_SPtr = std::shared_ptr<PendingRequestBook>;
 namespace Middleware
 {
 
+struct ConsumptionLoop
+{
+    ConsumptionLoop(KafkaConsumer &consumer,
+                    Worker &worker,
+                    const MsgCallback &msgCallback, const ErrCallback &errCb):
+        m_consumer(consumer),
+        m_worker(worker),
+        m_msgCallback(msgCallback),
+        m_errCb(errCb),
+        m_killed(0),
+        m_running(false)
+    {}
+    
+
+    void start()
+    {
+        m_running = true;
+        while (m_running)
+        {
+            auto records = m_consumer.poll(std::chrono::milliseconds(100));
+            for (const auto &record : records) {
+            if (auto err = record.error(); err) {
+                m_errCb(err);
+                continue;
+            }
+
+            const std::string &topic = record.topic();
+            const int32_t &partition = record.partition();
+            const int64_t &offset = record.offset();
+            const std::string &key = record.key().toString();
+            const std::string &value = record.value().toString();
+
+            KeyValuePairs headers;
+            for (auto const &[key, value] : record.headers()) {
+                headers.emplace(key, value.toString());
+            }
+
+            std::string msgType;
+            if (headers.find(HeaderKey::message_type()) != headers.end()) {
+                msgType = headers[HeaderKey::message_type()];
+            }
+
+            m_worker.push([topic = std::move(topic), partition, offset,
+                            msgType = std::move(msgType), key = std::move(key),
+                            headers = std::move(headers), value = std::move(value),
+                            msgCallback = m_msgCallback]() {
+                msgCallback(topic, partition, offset, msgType, key, headers, value);
+            });
+            }
+
+            m_consumer.commitSync();
+        }
+
+
+        m_consumer.close();
+        m_killed.release();
+    }
+
+    void kill()
+    {
+        if(m_running)
+        {
+            m_running = false;
+            m_killed.acquire();
+        }
+    }
+
+    ~ConsumptionLoop()
+    {
+        kill();
+    }
+
+    private:
+    KafkaConsumer &m_consumer;
+    Worker &m_worker;
+    const MsgCallback &m_msgCallback;
+    const ErrCallback &m_errCb;
+    std::atomic<bool> m_running;
+    std::binary_semaphore m_killed;
+};
+
 void consumptionThread(KafkaConsumer& consumer,
                         Worker& worker,
                         const MsgCallback& msgCallback,
-                        const ErrCallback& errCb)
+                        const ErrCallback& errCb,
+                        const std::shared_ptr<std::atomic<bool>>& running)
 {
-    while(true)
+    while(*running)
     {
         auto records = consumer.poll(std::chrono::milliseconds(100));
         for (const auto& record : records)
@@ -286,6 +371,47 @@ bool validateInitParams(const std::string& appId,
     return ret;
 }
 
+ConsumerFunc getSubsciptionFunc(ErrCallback errCallback, const std::shared_ptr<KafkaConsumer>& consumer)
+{
+    return 
+    [consumer, errCallback]
+    (const std::string& topic, const std::optional<RebalanceCallback>& rebalanceCallback) -> Error
+    {
+        if (topic.empty()) return Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Attempt to subscribe empty topic");
+
+        auto kafkaRebalanceCallback = 
+        [rebalanceCallback]
+        (const RebalanceEventType et, const TopicPartitions& tps ) 
+        {
+            TopicAssignmentEvent assignmentEvent =
+                (et == RebalanceEventType::PartitionsAssigned) ?
+                TopicAssignmentEvent::PartitionAssigned :
+                TopicAssignmentEvent::PartitionRevoked;
+
+            for(auto const& [topic, partition] : tps)
+            {
+                (*rebalanceCallback)(assignmentEvent, topic, partition);
+            }
+        };
+
+        try
+        {
+            if (!rebalanceCallback) {
+                consumer->subscribe({topic});
+            }
+            else
+            {
+                consumer->subscribe({topic}, kafkaRebalanceCallback);
+            }
+        }
+        catch(kafka::KafkaException& e)
+        {
+            return e.error();
+        }
+        return Error();
+    };
+}
+
 void initializeMiddleWare(const std::string& appId,
     const std::string& appGroup,
     const DescriptionFunc& descriptionFunc,
@@ -366,9 +492,9 @@ void initializeMiddleWare(const std::string& appId,
         kafkaConsumerProps.put(*MiddlewareConfig::group_id(), appId);
         individualConsumer = std::make_shared<KafkaConsumer>(kafkaConsumerProps);
     }
-    catch(const Error& e)
+    catch(const kafka::KafkaException& e)
     {
-        errCallback(e);
+        errCallback(e.error());
         return;
     }
     catch(const std::exception& e)
@@ -397,7 +523,7 @@ void initializeMiddleWare(const std::string& appId,
         if (topic.empty())          return APIError::TopicEmpty;
         else if (msgType->empty())  return APIError::MsgTypeEmpty;
         else if (key.empty())       return APIError::KeyEmpty;
-        else if (payload.empty())   return APIError::PayloadEmpty;
+        //else if (payload.empty())   return APIError::PayloadEmpty;
 
         auto msgType_copy = std::make_shared<std::string>(*msgType);
         auto key_copy = std::make_shared<std::string>(key);
@@ -473,50 +599,8 @@ void initializeMiddleWare(const std::string& appId,
         return APIError::Ok;
     };
 
-    auto getSubsciptionFunc =
-    [errCallback](const std::shared_ptr<KafkaConsumer>& consumer)
-    {
-        return 
-        [consumer, errCallback](const std::string& topic, const std::optional<RebalanceCallback>& rebalanceCallback)
-        {
-            if (topic.empty()) return APIError::TopicEmpty;
-            
-            if (!rebalanceCallback) {
-                consumer->subscribe({topic});
-                return APIError::Ok;
-            }
-
-            try
-            {
-                consumer->subscribe(
-                    {topic}, 
-                    [rebalanceCallback](
-                        const RebalanceEventType et,
-                        const TopicPartitions& tps ) 
-                    {
-                        TopicAssignmentEvent assignmentEvent =
-                            (et == RebalanceEventType::PartitionsAssigned) ?
-                            TopicAssignmentEvent::PartitionAssigned :
-                            TopicAssignmentEvent::PartitionRevoked;
-
-                        for(auto const& [topic, partition] : tps)
-                        {
-                            (*rebalanceCallback)(assignmentEvent, topic, partition);
-                        }
-                    }
-                );
-            }
-            catch(Error& e)
-            {
-                errCallback(e);
-                return APIError::SubscriptionFailed;
-            }
-            return APIError::Ok;
-        };
-    };
-
-    ConsumerFunc groupConsumerFunc = getSubsciptionFunc(groupConsumer);
-    ConsumerFunc individualConsumerFunc = getSubsciptionFunc(individualConsumer);
+    ConsumerFunc groupConsumerFunc = getSubsciptionFunc(errCallback, groupConsumer);
+    ConsumerFunc individualConsumerFunc = getSubsciptionFunc(errCallback, individualConsumer);
 
     auto pendingRequestBook = std::make_shared<PendingRequestBook>();
 
@@ -557,11 +641,12 @@ void initializeMiddleWare(const std::string& appId,
         return APIError::Ok;
     };
 
-    std::thread gcThread([groupConsumer, kafkaWorker, refinedMsgCallback, errCallback]() {
-        consumptionThread(*groupConsumer, *kafkaWorker, refinedMsgCallback, errCallback);
-    });
-        
-    timer->install([producerFunc, errCallback, appId, heartBeatGenFunc]() {
+    ConsumptionLoop groupConsumptionLoop(*groupConsumer, *kafkaWorker, refinedMsgCallback, errCallback);
+    std::thread([&groupConsumptionLoop]() {
+        groupConsumptionLoop.start();
+    }).detach();
+
+    const size_t heartbeatTimerId = timer->install([producerFunc, errCallback, appId, heartBeatGenFunc]() {
         producerFunc(*Topic::heartbeats(),
                     MessageType::heartBeat(),
                     appId,
@@ -580,11 +665,22 @@ void initializeMiddleWare(const std::string& appId,
         return respond(reqId, respPayload, isLast, sendCallback, pendingRequestBook, producerFunc, errCallback);
     };
 
-    initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc, requestFunc,  respondFunc);
+    if(auto const& err = individualConsumerFunc(appId, std::nullopt); err)
+    {
+        errCallback(err);
+        return;
+    }
 
-    while(individualConsumerFunc(appId, std::nullopt) != APIError::Ok);
-    
-    consumptionThread(*individualConsumer, *kafkaWorker, refinedMsgCallback, errCallback);
+    ConsumptionLoop individualConsumptionLoop(*individualConsumer, *kafkaWorker, refinedMsgCallback, errCallback);
+    ShutdownFunc shutdownFunc = [&individualConsumptionLoop, timer, heartbeatTimerId]() {
+        timer->unInstall(heartbeatTimerId);
+        individualConsumptionLoop.kill();
+    };
+
+    initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc, requestFunc, respondFunc, shutdownFunc);
+    individualConsumptionLoop.start();
+    producer->close();
+    // Group consumer will be destrioyed here and killed via RAII
 }
 
 }

@@ -7,3 +7,6 @@
 [submodule "ThirdParty/CPPFsm"]
 	path = ThirdParty/CPPFsm
 	url = https://github.com/sumitdhyani/CPPFsm.git
+[submodule "ThirdParty/MTTools"]
+	path = ThirdParty/MTTools
+	url = https://github.com/sumitdhyani/MTTools.git

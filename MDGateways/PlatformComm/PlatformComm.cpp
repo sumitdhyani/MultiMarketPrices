@@ -271,10 +271,11 @@ void onPriceDataFromExchange(const std::string& key, const MDUpdateVariant& data
 {
     if (auto it = symbolToDestTopics.find(key); it != symbolToDestTopics.end())
     {
-        auto [msgType, payload] = std::visit(overload{
+        auto const& [msgType, payload] = std::visit(overload{
             [](const TradeUpdate& u) { return std::pair{MessageType::trade_update(), *u}; },
             [](const DepthUpdate& u) { return std::pair{MessageType::depth_update(), *u}; }
         }, data);
+        
         for (auto const& destTopic : it->second)
         {
             producerFunc(destTopic, msgType, key, payload, {}, sencCb);

@@ -1,10 +1,15 @@
 #pragma once
+#include <NanoLog.h>
+#include <NanoLogCpp17.h>
 #include <boost/beast/core.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/beast/websocket/error.hpp>
 #include <boost/beast/websocket/ssl.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/json.hpp>
+#include <boost/mp11/list.hpp>
+#include <boost/system/detail/error_code.hpp>
 #include <cstdlib>
 #include <thread>
 #include <functional>
@@ -26,6 +31,25 @@ using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 // Sends a WebSocket message and prints the response
 class session : public std::enable_shared_from_this<session>
 {
+    enum class ErrorAction
+    {
+        Ignore,
+        Retry,
+        Reconnect,
+        Fatal
+    };
+
+    enum class ErrorOrigin
+    {
+        Connect,
+        Resolve,
+        SSLHandshake,
+        Handshake,
+        Read,
+        Write,
+        Close
+    };
+
     using PriceCallback = std::function<void(const std::string&)>; 
     // error, fatal(true means that the connection will not be recovered)
     using ReadyCallback = std::function<void(const beast::error_code&)>;
@@ -46,10 +70,11 @@ class session : public std::enable_shared_from_this<session>
     const uint32_t m_retryDelay_sec;
     std::set<std::string> m_depthSubscriptions;
     std::set<std::string> m_tradeSubscriptions;
+    net::steady_timer m_timer;
 
     void on_resolve(beast::error_code ec, tcp::resolver::results_type results)
     {
-        if(ec) return fail(ec, "resolve");
+        if(ec && !on_error(ec, ErrorOrigin::Resolve)) return;
 
         // Set a timeout on the operation
         beast::get_lowest_layer(m_ws).expires_after(std::chrono::seconds(60));
@@ -65,25 +90,21 @@ class session : public std::enable_shared_from_this<session>
 
     void on_connect(beast::error_code ec, tcp::resolver::results_type::endpoint_type ep)
     {
-        if(ec) return fail(ec, "connect");
+        if(ec && !on_error(ec, ErrorOrigin::Connect)) return;
 
-        std::string m_hostPort = m_host + ':' + std::to_string(ep.port());
+        std::string hostPort = m_host + ':' + std::to_string(ep.port());
 
-        // Set a timeout on the operation
-        beast::get_lowest_layer(m_ws).expires_after(std::chrono::seconds(30));
-
-        // Set SNI Hostname (many hosts need this to handshake successfully)
-        if(! SSL_set_tlsext_host_name(
+        if(!SSL_set_tlsext_host_name(
                 m_ws.next_layer().native_handle(),
-                m_hostPort.c_str()))
+                m_host.c_str()))  // ⚠️ use host, not host:port
         {
             ec = beast::error_code(static_cast<int>(::ERR_get_error()),
                 net::error::get_ssl_category());
-            return fail(ec, "connect");
+            if(!on_error(ec, ErrorOrigin::Connect)) return;
         }
 
-        NANO_LOG(DEBUG, "[Binance WS] on_connect");
-        // Perform the SSL handshake
+        beast::get_lowest_layer(m_ws).expires_after(std::chrono::seconds(30));
+
         m_ws.next_layer().async_handshake(
             ssl::stream_base::client,
             beast::bind_front_handler(
@@ -93,7 +114,7 @@ class session : public std::enable_shared_from_this<session>
 
     void on_ssl_handshake(beast::error_code ec)
     {
-        if(ec) return fail(ec, "ssl_handshake");
+        if(ec && !on_error(ec, ErrorOrigin::SSLHandshake)) return;
 
         // Turn off the timeout on the tcp_stream, because
         // the websocket stream has its own timeout system.
@@ -123,7 +144,7 @@ class session : public std::enable_shared_from_this<session>
 
     void on_handshake(beast::error_code ec)
     {
-        if(ec) return fail(ec, "handshake");
+        if(ec && !on_error(ec, ErrorOrigin::Handshake)) return;
         m_connected = true;
         beast::get_lowest_layer(m_ws).expires_never();
         NANO_LOG(DEBUG, "[Binance WS] on_handshake");
@@ -150,11 +171,7 @@ class session : public std::enable_shared_from_this<session>
 
     void on_read(beast::error_code ec, size_t bytes_transferred)
     {
-        if(ec)
-        {
-            if (ec == beast::error::timeout) closeConnection();
-            return fail(ec, "read");
-        }
+        if(ec && !on_error(ec, ErrorOrigin::Read)) return;
         
         std::string payload = beast::buffers_to_string(m_buffer.data());
         m_buffer.consume(bytes_transferred);
@@ -187,50 +204,172 @@ class session : public std::enable_shared_from_this<session>
     {
         boost::ignore_unused(bytes_transferred);
 
-        if(ec) return fail(ec, "write");
-        
+        if(ec && !on_error(ec, ErrorOrigin::Write))
+        {
+            m_inFlight = false;
+            return;
+        }
+
+        m_commandQueue.pop();
         if (m_commandQueue.empty()) {
             m_inFlight = false;
             return;
-            
         }
-        
-        std::string cmd = m_commandQueue.front();
-        m_commandQueue.pop();
-        m_ws.async_write(net::buffer(cmd),
-                         beast::bind_front_handler(&session::on_write, shared_from_this())
-        );
 
-        m_inFlight = true;
+        write();
+        
     }
 
     void on_close(beast::error_code ec)
     {
-        if(ec) return fail(ec, "close");
+        if(!ec || ec == websocket::error::closed) return;
+        on_error(ec, ErrorOrigin::Close);
         // If we get here then the connection is closed gracefully
     }
 
-    bool isErrorFatal(const beast::error_code& ec)
+    const char* errorOriginToString(ErrorOrigin origin)
     {
-        return false;
+        switch (origin)
+        {
+            case ErrorOrigin::Connect: return "Connect";
+            case ErrorOrigin::Resolve: return "Resolve";
+            case ErrorOrigin::SSLHandshake: return "SSLHandshake";
+            case ErrorOrigin::Handshake: return "Handshake";
+            case ErrorOrigin::Read: return "Read";
+            case ErrorOrigin::Write: return "Write";
+            case ErrorOrigin::Close: return "Close";
+            default: return "Unknown";
+        }
     }
 
-    void fail(beast::error_code ec, char const* what)
+    // True means continue with rest of the function
+    bool on_error(beast::error_code ec, const ErrorOrigin& origin)
     {
-        m_connected = false;
-        NANO_LOG(DEBUG, "%s: %s", what, ec.message().c_str());
-        if (isErrorFatal(ec) && !m_connectedOnce)
+        auto action = classifyError(ec);
+
+        NANO_LOG(WARNING, "[Binance WS] %s: %s",
+                errorOriginToString(origin), ec.message().c_str());
+
+        switch (action)
         {
-            m_readyCallback(ec);
-            return;
+            case ErrorAction::Ignore:
+                return true;
+
+            case ErrorAction::Retry:
+            {
+                NANO_LOG(WARNING, "[Binance WS] Retrying operation");
+                m_timer.cancel();
+                handleRetry(origin);
+                return false;
+            }
+
+            case ErrorAction::Reconnect:
+            {
+                NANO_LOG(WARNING, "[Binance WS] Reconnecting");
+
+                m_timer.cancel();
+                closeConnection();
+
+                // reset state
+                m_inFlight = false;
+                m_connected = false;
+
+                m_timer.expires_after(std::chrono::seconds(m_retryDelay_sec));
+
+                m_timer.async_wait([self = shared_from_this()](const beast::error_code& ec){
+                    if (ec) return;
+                    self->run();
+                });
+
+                return false;
+            }
+
+            case ErrorAction::Fatal:
+            {
+                NANO_LOG(ERROR, "[Binance WS] Fatal error, shutting down");
+
+                m_timer.cancel();
+                closeConnection();
+
+                if (!m_connectedOnce)
+                    m_readyCallback(ec);
+
+                return false;
+            }
         }
-        std::this_thread::sleep_for(std::chrono::seconds(m_retryDelay_sec));
-        run();
+
+        return false;
     }
 
     bool hasSubscriptions()
     {
-        return !(m_depthSubscriptions.empty() && !m_tradeSubscriptions.empty());
+        return !(m_depthSubscriptions.empty() && m_tradeSubscriptions.empty());
+    }
+
+    ErrorAction classifyError(const beast::error_code& ec)
+    {
+        using namespace boost::asio;
+        using namespace beast;
+        namespace ws = websocket;
+
+        if (ec == net::error::operation_aborted)
+            return ErrorAction::Ignore;
+
+        if (ec == ws::error::closed)
+            return ErrorAction::Reconnect;
+
+        if (ec == beast::error::timeout)
+            return ErrorAction::Reconnect;
+
+        if (ec == ws::condition::handshake_failed)
+            return ErrorAction::Fatal;
+
+        if (ec == ws::condition::protocol_violation)
+            return ErrorAction::Reconnect;
+
+        if (ec.category() == net::error::get_ssl_category())
+            return ErrorAction::Fatal;
+
+        if (ec == net::error::connection_reset)
+            return ErrorAction::Reconnect;
+
+        if (ec == net::error::would_block ||
+            ec == net::error::try_again)
+            return ErrorAction::Retry;
+
+        return ErrorAction::Reconnect;
+    }
+
+    void handleRetry(ErrorOrigin origin)
+    {
+        m_timer.cancel();
+        switch (origin)
+        {
+            case ErrorOrigin::Write:
+            if(!m_ws.is_open())
+            {
+                run();
+            }
+            else if (!m_commandQueue.empty())
+            {
+                auto const& cmd = m_commandQueue.front();
+
+                m_ws.async_write(net::buffer(cmd),
+                    beast::bind_front_handler(
+                        &session::on_write,
+                        shared_from_this()));
+                m_inFlight = true;
+            }
+            break;
+
+            case ErrorOrigin::Read:
+                read(); // restart read loop
+                break;
+            default:
+                // fallback: reconnect
+                run();
+                break;
+        }
     }
 
 public:
@@ -255,6 +394,7 @@ public:
         , m_path(path)
         , m_retryDelay_sec(retryDelay_sec)
         , m_readyCallback(readyCallback)
+        , m_timer(strand)
     {}
 
     bool subscribeTrade(const std::string& symbol)
@@ -327,15 +467,22 @@ public:
 
     void sendOrQueue(const std::string& jsonCmd)
     {
-        if (m_inFlight || !m_connected) {
-            m_commandQueue.push(jsonCmd);
-        } else {
-            NANO_LOG(DEBUG, "Sending command: %s", jsonCmd.c_str());
-            m_ws.async_write(net::buffer(jsonCmd),
-                             beast::bind_front_handler(&session::on_write, shared_from_this())
-            );
+        m_commandQueue.push(jsonCmd);
+        if (!m_connected) return;
+        else if (!m_inFlight)
+        {
+            write();
             m_inFlight = true;
         }
+    }
+
+    void write()
+    {
+        auto const &cmd = m_commandQueue.front();
+        NANO_LOG(DEBUG, "Sending command: %s", cmd.c_str());
+            m_ws.async_write(net::buffer(cmd),
+                             beast::bind_front_handler(&session::on_write, shared_from_this())
+            );
     }
 
     // Start the asynchronous operation

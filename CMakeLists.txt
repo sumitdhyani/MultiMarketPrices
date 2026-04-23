@@ -20,3 +20,5 @@ add_subdirectory(MDGateways)
 add_subdirectory(SDPMock)
 add_subdirectory(ConfigLib)
 add_subdirectory(Tests)
+add_subdirectory(PerformanceTests)
+

@@ -9,6 +9,7 @@
 #include<unordered_map>
 #include "PlatformComm.h"
 #include "Constants.h"
+#include "MDGatewayRouterConfig.h"
 #include "PerPartitionSM.h"
 #include <Logging.h>
 
@@ -112,14 +113,24 @@ bool handleBookKeepingForSubscription(const std::string& key, const std::string&
     else
     {
         auto& [_, destTopics] = *it;
-        return destTopics.insert(destTopic).second;
+        auto const& ret = destTopics.insert(destTopic).second;
+        if (!ret)
+        {
+            NANO_LOG(WARNING, "Duplicate sub for %s:%s", key.c_str(), destTopic.c_str());
+        }
+
+        return ret;
     }
 }
 
 bool handleBookKeepingForUnsubscription(const std::string& key, const std::string& destTopic)
 {   
     auto it = symbolToDestTopics.find(key);
-    if (it == symbolToDestTopics.end()) return false;
+    if (it == symbolToDestTopics.end())
+    {
+        NANO_LOG(WARNING, "Spurious unsub for: %s", key.c_str());
+        return false;
+    }
  
     auto& [_, destTopics] = *it;
     if(destTopics.erase(destTopic))
@@ -127,6 +138,8 @@ bool handleBookKeepingForUnsubscription(const std::string& key, const std::strin
         if(destTopics.empty()) symbolToDestTopics.erase(it);
         return true;
     }
+
+    NANO_LOG(WARNING, "Spurious unsub for: %s:%s", key.c_str(), destTopic.c_str());
     return false;
 }
 
@@ -155,10 +168,9 @@ void msgCb(const std::string& topic,
 
         auto obj = json::parse(msg).as_object();
         bool isSub = msgType == *MessageType::subscribe();
-        auto routingKey = gKeyGenFunc(
-            std::variant<MDUpdateVariant, SubUnsubVariant>{
-                isSub ? SubUnsubVariant{SubRequest{obj}} : SubUnsubVariant{UnsubRequest{obj}}
-            });
+        auto routingKey = gKeyGenFunc(msgType == *MessageType::subscribe()?
+                                        SubUnsubVariant{SubRequest{obj}}:
+                                        SubUnsubVariant{UnsubRequest{obj}});
         if (!routingKey) return;
 
         const std::string destTopic = obj.at(*Tags::destination_topic()).as_string().c_str();
@@ -168,6 +180,8 @@ void msgCb(const std::string& topic,
             NANO_LOG(DEBUG, "BookKeeping failed for key: %s and destTopic: %s", (*routingKey).c_str(), destTopic.c_str());
             return;
         }
+
+        NANO_LOG(DEBUG, "BookKeeping success for %s:%s", (*routingKey).c_str(), destTopic.c_str());
         
         auto& [_, existingFSM] = *it;
         existingFSM->handleEvent(SubUnsubKey(*routingKey), isSub);
@@ -318,7 +332,7 @@ void handleInstrumentListRequest(const uint64_t& reqId, const json::object& obj)
         [reqId](bool isLast, const MDRespVariant& resp) {
             std::visit(overload{
                 [&](const InstrumentRecord& ir) { 
-                    NANO_LOG(DEBUG, "Processing instrument record");
+                    //NANO_LOG(DEBUG, "Processing instrument record");
                     respondFunc(reqId, *ir, isLast, sencCb); 
                 },
                 [](const auto&) {}

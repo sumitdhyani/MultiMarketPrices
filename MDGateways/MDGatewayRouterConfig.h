@@ -30,7 +30,7 @@ struct UnsubRequest : TypeWrapper<boost::json::object>{};
 using SubUnsubVariant = std::variant<SubRequest, UnsubRequest>;
 
 // Key derivation: generates a routing key from either a price update or a sub/unsub command
-using KeyGenFunc = std::function<std::optional<std::string>(const std::variant<MDUpdateVariant, SubUnsubVariant>&)>;
+using KeyGenFunc = std::function<std::optional<std::string>(const SubUnsubVariant&)>;
 
 // --- Snapshot request types (Platform → Exchange) ---
 struct TradeSnapshotRequest : TypeWrapper<std::string>{};  // wraps symbol

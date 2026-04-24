@@ -1,4 +1,6 @@
 #pragma once
+#include <NanoLog.h>
+#include <NanoLogCpp17.h>
 #include <functional>
 #include <ranges>
 #include <tuple>
@@ -38,6 +40,16 @@ IEventProcessor<Revoke>
         f_unsubFunc(unsubFunc)
     {}
 
+    void onEntry() override
+    {
+        NANO_LOG(DEBUG, "Downloading:%u on_entry", m_partition);
+    }
+
+    void beforeExit() override
+    {
+        NANO_LOG(DEBUG, "Downloading:%u before_exit", m_partition);
+    }
+
     /********************************Event Handlers ****************************************************** */
     
     Transition process(const SubscriptionRecord& subscription) override
@@ -50,6 +62,7 @@ IEventProcessor<Revoke>
 
     Transition process(const SubUnsubKey& key, const bool& subscribe) override
     {
+        NANO_LOG(DEBUG, "Downloading:%u deferring key %s:%s", m_partition, key->c_str(), subscribe? "subscribe" : "unsubscribe");
         return SpecialTransition::deferralTransition;
     };
 
@@ -80,6 +93,16 @@ IEventProcessor<Revoke>
         m_subFunc(subFunc),
         m_unsubFunc(unsubFunc)
     {}
+
+    void onEntry() override
+    {
+        NANO_LOG(DEBUG, "Operational:%u on_entry", m_partition);
+    }
+
+    void beforeExit() override
+    {
+        NANO_LOG(DEBUG, "Operational:%u before_exit", m_partition);
+    }
 
     /********************************Event Handlers ****************************************************** */
 
@@ -119,6 +142,16 @@ IEventProcessor<Assign>
         f_subFunc(subFunc),
         f_unsubFunc(unsubFunc)
     {}
+
+    void onEntry() override
+    {
+        NANO_LOG(DEBUG, "Operational:%u on_entry", m_partition);
+    }
+
+    void beforeExit() override
+    {
+        NANO_LOG(DEBUG, "Operational:%u before_exit", m_partition);
+    }
 
     /********************************Event Handlers ****************************************************** */
     

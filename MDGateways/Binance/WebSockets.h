@@ -1,16 +1,21 @@
 #pragma once
 #include <NanoLog.h>
 #include <NanoLogCpp17.h>
+#include <boost/asio/post.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/websocket/error.hpp>
 #include <boost/beast/websocket/ssl.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/intrusive/set_hook.hpp>
 #include <boost/json.hpp>
+#include <boost/json/serialize.hpp>
 #include <boost/mp11/list.hpp>
 #include <boost/system/detail/error_code.hpp>
+#include <cstdint>
 #include <cstdlib>
+#include <MTTools/TaskThrottlers.hpp>
 #include <thread>
 #include <functional>
 #include <stdint.h>
@@ -26,11 +31,13 @@ namespace http = beast::http;           // from <boost/beast/http.hpp>
 namespace websocket = beast::websocket; // from <boost/beast/websocket.hpp>
 namespace net = boost::asio;            // from <boost/asio.hpp>
 namespace ssl = boost::asio::ssl;       // from <boost/asio/ssl.hpp>
+namespace json = boost::json;
 using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
 
 // Sends a WebSocket message and prints the response
 class session : public std::enable_shared_from_this<session>
 {
+    private:
     enum class ErrorAction
     {
         Ignore,
@@ -62,15 +69,22 @@ class session : public std::enable_shared_from_this<session>
     const std::string m_path;
     const PriceCallback m_priceCallback;
     const ReadyCallback m_readyCallback;
-    std::queue<std::string> m_commandQueue;
     bool m_inFlight;
+    bool m_PendingSubsInFlight;
+    bool m_PendingunsubsInFlight;
+    std::string m_inFlightComand;
     bool m_connected;
     bool m_connectedOnce;
     int m_msgNo;
     const uint32_t m_retryDelay_sec;
-    std::set<std::string> m_depthSubscriptions;
-    std::set<std::string> m_tradeSubscriptions;
+    std::set<std::string> m_liveSubscriptions;
+    net::strand<net::io_context::executor_type>& m_strand;
+
+    std::set<std::string> m_pendingSubs;
+    std::set<std::string> m_pendingUnsubs;
+
     net::steady_timer m_timer;
+    const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread> m_throttler;
 
     void on_resolve(beast::error_code ec, tcp::resolver::results_type results)
     {
@@ -148,9 +162,15 @@ class session : public std::enable_shared_from_this<session>
         m_connected = true;
         beast::get_lowest_layer(m_ws).expires_never();
         NANO_LOG(DEBUG, "[Binance WS] on_handshake");
-
-        for (auto const& symbol : m_tradeSubscriptions) subscribeTrade(symbol);
-        for (auto const& symbol : m_depthSubscriptions) subscribeDepth(symbol);
+        // Send the stream subscriptions that were live when the connection was live
+        // Also try to cancel them out with pending unsubscriptions
+        for (auto const& stream : m_liveSubscriptions)
+        {
+            checkAndCancel(stream, m_pendingUnsubs);
+        }
+        
+        if (!m_inFlightComand.empty()) send(m_inFlightComand);
+        else if(!sendPendingSubs()) sendPendingUnsubs();
         
         // Notify with null error
         if(!m_connectedOnce)
@@ -200,24 +220,81 @@ class session : public std::enable_shared_from_this<session>
         }
     }
 
+    bool sendPendingSubs()
+    {
+        json::array subsToSend;
+
+        for(auto const& sub : m_pendingSubs)
+        {
+            subsToSend.push_back(json::value(sub));
+        }
+
+        if(!subsToSend.empty())
+        {
+            send(json::serialize(json::object{
+                {"method", "SUBSCRIBE"},
+                {"id", ++m_msgNo},
+                {"params", subsToSend}
+            }));
+
+            m_PendingSubsInFlight = true;
+            return true;
+        }
+
+        return false;
+    }
+
+    void sendPendingUnsubs()
+    {
+        json::array unsubsToSend;
+
+        for(auto const& unsub : m_pendingUnsubs)
+        {
+            unsubsToSend.push_back(json::value(unsub));
+        }
+
+        if (!unsubsToSend.empty())
+        {
+            send(json::serialize(json::object{
+                {"method", "UNSUBSCRIBE"},
+                {"id", ++m_msgNo},
+                {"params", unsubsToSend}
+            }));
+
+            m_PendingunsubsInFlight = true;
+        }
+    }
+
+
     void on_write(beast::error_code ec, std::size_t bytes_transferred)
     {
+        NANO_LOG(DEBUG, "Sent Command");
         boost::ignore_unused(bytes_transferred);
-
+        m_inFlight = false;
         if(ec && !on_error(ec, ErrorOrigin::Write))
         {
-            m_inFlight = false;
+            m_PendingSubsInFlight = false;
+            m_PendingunsubsInFlight = false;
             return;
         }
 
-        m_commandQueue.pop();
-        if (m_commandQueue.empty()) {
-            m_inFlight = false;
-            return;
+        if (!m_inFlightComand.empty())
+        {
+            m_inFlightComand.clear();
+            if(!sendPendingSubs()) sendPendingUnsubs();
         }
-
-        write();
-        
+        else if(m_PendingSubsInFlight)
+        {
+            m_PendingSubsInFlight = false;
+            m_pendingSubs.clear();
+            sendPendingUnsubs();
+        }
+        else if(m_PendingunsubsInFlight)
+        {
+            m_PendingunsubsInFlight = false;
+            m_pendingUnsubs.clear();
+            if(!sendPendingSubs()) sendPendingUnsubs();
+        }
     }
 
     void on_close(beast::error_code ec)
@@ -303,7 +380,7 @@ class session : public std::enable_shared_from_this<session>
 
     bool hasSubscriptions()
     {
-        return !(m_depthSubscriptions.empty() && m_tradeSubscriptions.empty());
+        return !(m_liveSubscriptions.empty());
     }
 
     ErrorAction classifyError(const beast::error_code& ec)
@@ -346,22 +423,19 @@ class session : public std::enable_shared_from_this<session>
         switch (origin)
         {
             case ErrorOrigin::Write:
-            if(!m_ws.is_open())
-            {
-                run();
-            }
-            else if (!m_commandQueue.empty())
-            {
-                auto const& cmd = m_commandQueue.front();
-
-                m_ws.async_write(net::buffer(cmd),
-                    beast::bind_front_handler(
-                        &session::on_write,
-                        shared_from_this()));
-                m_inFlight = true;
-            }
+                if(!m_ws.is_open())
+                {
+                    run();
+                }
+                else if(!m_inFlightComand.empty()) 
+                {
+                    send(m_inFlightComand);
+                }
+                else
+                {
+                    if(!sendPendingSubs()) return sendPendingUnsubs();
+                }
             break;
-
             case ErrorOrigin::Read:
                 read(); // restart read loop
                 break;
@@ -382,7 +456,8 @@ public:
         const std::string& port,
         const std::string& path,
         const uint32_t& retryDelay_sec,
-        const ReadyCallback& readyCallback)
+        const ReadyCallback& readyCallback,
+        const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler)
         : m_resolver(strand)
         , m_ws(strand, ctx)
         , m_priceCallback(priceCallback)
@@ -395,94 +470,207 @@ public:
         , m_retryDelay_sec(retryDelay_sec)
         , m_readyCallback(readyCallback)
         , m_timer(strand)
+        , m_throttler(throttler)
+        , m_PendingSubsInFlight(false)
+        , m_PendingunsubsInFlight(false)
+        , m_inFlightComand("")
+        , m_strand(strand)
     {}
 
-    bool subscribeTrade(const std::string& symbol)
+    // try cancelling an incoming sub with a pending unsub and vice-versa, return true if cancellation is successful
+    bool checkAndCancel(const std::string& symbol, std::set<std::string>& cancellationCandidate)
     {
-        if (m_tradeSubscriptions.contains(symbol))
-            return false;
-
-        std::string stream = symbol + "@trade";
-        boost::json::object jsonObj {
-            {"method", "SUBSCRIBE"},
-            {"id", ++m_msgNo},
-            {"params", boost::json::array{stream}}
-        };
-
-        sendOrQueue(boost::json::serialize(jsonObj));
-        m_tradeSubscriptions.insert(symbol);
-        return true;
-    }
-
-    bool subscribeDepth(const std::string& symbol)
-    {
-        if (m_depthSubscriptions.contains(symbol))
-            return false;
-
-        std::string stream = symbol + "@depth5";
-        boost::json::object jsonObj {
-            {"method", "SUBSCRIBE"},
-            {"id", ++m_msgNo},
-            {"params", boost::json::array{stream}}
-        };
-
-        sendOrQueue(boost::json::serialize(jsonObj));
-        m_depthSubscriptions.insert(symbol);
-        return true;
-    }
-
-    bool unsubscribeTrade(const std::string& symbol)
-    {
-        if (!m_tradeSubscriptions.contains(symbol))
-            return false;
-
-        std::string stream = symbol + "@trade";
-        boost::json::object jsonObj {
-            {"method", "UNSUBSCRIBE"},
-            {"id", ++m_msgNo},
-            {"params", boost::json::array{stream}}
-        };
-
-        sendOrQueue(boost::json::serialize(jsonObj));
-        m_tradeSubscriptions.erase(symbol);
-        return true;
-    }
-
-    bool unsubscribeDepth(const std::string& symbol)
-    {
-        if (!m_depthSubscriptions.contains(symbol))
-            return false;
-
-        std::string stream = symbol + "@depth5";
-        boost::json::object jsonObj {
-            {"method", "UNSUBSCRIBE"},
-            {"id", ++m_msgNo},
-            {"params", boost::json::array{stream}}
-        };
-
-        sendOrQueue(boost::json::serialize(jsonObj));
-        m_depthSubscriptions.erase(symbol);
-        return true;
-    }
-
-    void sendOrQueue(const std::string& jsonCmd)
-    {
-        m_commandQueue.push(jsonCmd);
-        if (!m_connected) return;
-        else if (!m_inFlight)
+        if (auto it = cancellationCandidate.find(symbol); it != cancellationCandidate.end())
         {
-            write();
-            m_inFlight = true;
+            cancellationCandidate.erase(it);
+            return true;
         }
+
+        return false;
     }
 
-    void write()
+    void send(const std::string& jsonCmd)
     {
-        auto const &cmd = m_commandQueue.front();
-        NANO_LOG(DEBUG, "Sending command: %s", cmd.c_str());
-            m_ws.async_write(net::buffer(cmd),
-                             beast::bind_front_handler(&session::on_write, shared_from_this())
-            );
+        NANO_LOG(DEBUG, "Sending command to throttler: %s", jsonCmd.c_str());
+
+        m_throttler->push([self = shared_from_this(), this, jsonCmd](){
+            net::post(m_strand, [self, this, jsonCmd]()
+            {
+                NANO_LOG(DEBUG, "Sending command to network: %s", jsonCmd.c_str());
+                m_ws.async_write(net::buffer(jsonCmd),
+                                beast::bind_front_handler(&session::on_write, shared_from_this())
+                );
+            });
+        });
+        
+        m_inFlight = true;
+    }
+
+    void subscribeTradeOnStrand(const std::string& symbol)
+    {
+        auto const& stream = symbol + "@trade";
+        if (m_liveSubscriptions.contains(stream))
+        {
+            NANO_LOG(WARNING, "Spurious Sub: %s", stream.c_str());
+            return;
+        } 
+
+        m_liveSubscriptions.insert(stream);
+        if (m_inFlight || !m_connected)
+        {
+            if(!checkAndCancel(stream, m_pendingUnsubs))
+            {
+                m_pendingSubs.insert(stream);
+                NANO_LOG(DEBUG, "SubStream %s put to pending queue", stream.c_str());
+            }
+            else[[unlikely]]
+            {
+                NANO_LOG(DEBUG, "Sub cancelled: %s", stream.c_str());
+            }
+            return;
+        }
+        
+        json::object jsonObj {
+            {"method", "SUBSCRIBE"},
+            {"id", ++m_msgNo},
+            {"params", json::array{stream}}
+        };
+
+        m_inFlightComand = boost::json::serialize(jsonObj);
+        send(m_inFlightComand);
+    }
+
+    void subscribeDepthOnStrand(const std::string& symbol)
+    {
+        auto const& stream = symbol + "@depth5";
+        if (m_liveSubscriptions.contains(stream))
+        {
+            NANO_LOG(WARNING, "Spurious Sub: %s", stream.c_str());
+            return;
+        }
+
+        m_liveSubscriptions.insert(stream);
+        if (m_inFlight || !m_connected)
+        {
+            if(!checkAndCancel(stream, m_pendingUnsubs))
+            {
+                m_pendingSubs.insert(stream);
+                NANO_LOG(DEBUG, "SubStream %s put to pending queue", stream.c_str());
+            }
+            else
+            {
+                NANO_LOG(DEBUG, "Sub cancelled: %s", stream.c_str());
+            }
+            return;
+        }
+
+        boost::json::object jsonObj {
+            {"method", "SUBSCRIBE"},
+            {"id", ++m_msgNo},
+            {"params", boost::json::array{stream}}
+        };
+
+        m_inFlightComand = boost::json::serialize(jsonObj);
+        send(m_inFlightComand);
+    }
+
+    void unsubscribeTradeOnStrand(const std::string& symbol)
+    {
+        auto const& stream = symbol + "@trade";
+        if (!m_liveSubscriptions.contains(stream))
+        {
+            NANO_LOG(WARNING, "Spurious Unsub: %s", stream.c_str());
+            return;
+        }
+
+        m_liveSubscriptions.erase(stream);
+        if (m_inFlight || !m_connected)
+        {
+            if(!checkAndCancel(stream, m_pendingSubs))
+            {
+                m_pendingUnsubs.insert(stream);
+                NANO_LOG(DEBUG, "UnsubStream %s put to pending queue", stream.c_str());
+            }
+            else
+            {
+                NANO_LOG(DEBUG, "Unsub cancelled: %s", stream.c_str());
+            }
+            return;
+        }
+
+        boost::json::object jsonObj {
+            {"method", "UNSUBSCRIBE"},
+            {"id", ++m_msgNo},
+            {"params", boost::json::array{stream}}
+        };
+
+
+        m_inFlightComand = boost::json::serialize(jsonObj);
+        send(m_inFlightComand);
+    }
+
+    void unsubscribeDepthOnStrand(const std::string& symbol)
+    {
+        auto const& stream = symbol + "@depth5";
+        if (!m_liveSubscriptions.contains(stream))
+        {
+            NANO_LOG(WARNING, "Spurious Unsub: %s", stream.c_str());
+            return;
+        }
+
+        m_liveSubscriptions.erase(stream);
+        if (m_inFlight || !m_connected)
+        {
+            if(!checkAndCancel(stream, m_pendingSubs))
+            {
+                m_pendingUnsubs.insert(stream);
+                NANO_LOG(DEBUG, "UnsubStream %s put to pending queue", stream.c_str());
+            }
+            else
+            {
+                NANO_LOG(DEBUG, "Unsub cancelled: %s", stream.c_str());
+            }
+            return;
+        }
+
+        boost::json::object jsonObj {
+            {"method", "UNSUBSCRIBE"},
+            {"id", ++m_msgNo},
+            {"params", boost::json::array{stream}}
+        };
+
+        m_inFlightComand = boost::json::serialize(jsonObj);
+        send(m_inFlightComand);
+    }
+
+
+    public:
+    void subscribeTrade(const std::string& symbol)
+    {
+        net::post(m_strand, [self = shared_from_this(), this, symbol](){
+            subscribeTradeOnStrand(symbol);
+        });
+    }
+
+    void subscribeDepth(const std::string& symbol)
+    {
+        net::post(m_strand, [self = shared_from_this(), this, symbol](){
+            subscribeDepthOnStrand(symbol);
+        });
+    }
+
+    void unsubscribeTrade(const std::string& symbol)
+    {
+        net::post(m_strand, [self = shared_from_this(), this, symbol](){
+            unsubscribeTradeOnStrand(symbol);
+        });
+    }
+
+    void unsubscribeDepth(const std::string& symbol)
+    {
+        net::post(m_strand, [self = shared_from_this(), this, symbol](){
+            unsubscribeDepthOnStrand(symbol);
+        });
     }
 
     // Start the asynchronous operation
@@ -500,38 +688,3 @@ public:
     }
 
 };
-
-// int main(int argc, char** argv)
-// {
-//     char const* host = "stream.binance.com";
-//     char const* port = "9443";
-//     auto const path = "/stream";
-
-//     // The io_context is required for all I/O
-//     net::io_context ioc;
-
-//     // The SSL context is required, and holds certificates
-//     ssl::context ctx{ssl::context::tlsv12_client};
-
-//     // Launch the asynchronous operation
-//     // std::shared_ptr<session> sess;
-//     std::shared_ptr<session> sess = std::make_shared<session>(ioc,
-//         ctx, 
-//         [](const std::string& update) {
-//             std::cout << "Update: " << update << std::endl;
-//         },
-//         host,
-//         port,
-//         path,
-//         10,
-//         [](const beast::error_code& ec, bool isFatal){},
-//         [&sess](){
-//             std::cout << "Connection established, subscribing to streams..." << std::endl;
-//             sess->subscribeTrade("btcusdt");
-//         });
-
-//     sess->run();
-//     ioc.run();
-
-//     return EXIT_SUCCESS;
-// }

@@ -1,11 +1,14 @@
 #include "Binance.h"
 #include "Constants.h"
+#include "MTTools/TaskThrottlers.hpp"
 #include "PlatformComm/PlatformComm.h"
 #include <MDGatewayRouterConfig.h>
 #include <Logging.h>
 #include <ConfigLib/ConfigLib.h>
 #include <NanoLogCpp17.h>
 #include <boost/json/object.hpp>
+#include <chrono>
+#include <memory>
 #include <string>
 
 using namespace NanoLog::LogLevels;
@@ -220,7 +223,11 @@ void unsubscribe(const std::shared_ptr<session>& sess,
         *priceType == PriceType::trade() ?
             sess->unsubscribeTrade(symbol) :
             sess->unsubscribeDepth(symbol);
-    }    
+    }
+    else [[unlikely]]
+    {
+        NANO_LOG(DEBUG, "Invalid priceType: %s", tokens[1].c_str());
+    }
 }
 
 void onGatewayConnected(const std::shared_ptr<session>& sess,
@@ -278,31 +285,19 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
         [sess, &strand](const std::string& key, const SubUnsubVariant& cmd) {
             std::visit(overload{
                 [&](const SubRequest&) {
-                    net::post(strand, [sess, key]() {
-                        NANO_LOG(DEBUG, "Subscribing to %s", key.c_str());
-                        subscribe(sess, key);
-                    });
+                    subscribe(sess, key);
                 },
                 [&](const UnsubRequest&) {
-                    net::post(strand, [sess, key]() {
-                        NANO_LOG(DEBUG, "Unsubscribing from %s", key.c_str());
                         unsubscribe(sess, key);
-                    });
                 }
             }, cmd);
         }
     );
 
-    KeyGenFunc keyGenFunc = [](const std::variant<MDUpdateVariant, SubUnsubVariant>& v) -> std::optional<std::string> {
+    KeyGenFunc keyGenFunc = [](const SubUnsubVariant& v) -> std::optional<std::string> {
         return std::visit(overload{
-            [](const MDUpdateVariant&) -> std::optional<std::string> { return std::nullopt; },
-            [](const SubUnsubVariant& suv) -> std::optional<std::string> {
-                return std::visit(overload{
-                    [](const SubRequest& req)   { return generateKeyFromSubUnsubRequest(*req); },
-                    [](const UnsubRequest& req) { return generateKeyFromSubUnsubRequest(*req); }
-                }, suv);
-            }
-        }, v);
+                    [](auto const& req)   { return generateKeyFromSubUnsubRequest(*req); },
+                }, v);
     };
 
     initMiddleware(routing, keyGenFunc, brokers, timer, workerThread,
@@ -406,7 +401,8 @@ void launchWebSocketClient(net::io_context& ioc,
     ssl::context& ctx,
     net::strand<net::io_context::executor_type>& strand,
     const std::shared_ptr<BinanceRestClient>& client,
-    const json::object& cfg)
+    const json::object& cfg,
+    const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler)
 {
     char const* host = "stream.binance.com";
     char const* port = "9443";
@@ -439,7 +435,8 @@ void launchWebSocketClient(net::io_context& ioc,
                     routing,
                     cfg);
             }).detach();
-        }
+        },
+        throttler
     );
     (*sessHolder)->run();
 }
@@ -447,12 +444,13 @@ void launchWebSocketClient(net::io_context& ioc,
 void launchRestClient(net::io_context& ioc,
     ssl::context& ctx,
     net::strand<net::io_context::executor_type>& strand,
-    const json::object& cfg)
+    const json::object& cfg,
+    const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler)
 {
     std::shared_ptr<BinanceRestClient> client =
     std::make_shared<BinanceRestClient>(strand,
         ctx,
-        [&ioc, &ctx, &strand, &client, &cfg]
+        [&ioc, &ctx, &strand, &client, &cfg, throttler]
         (const beast::error_code& ec){
             if(ec)
             {
@@ -462,7 +460,7 @@ void launchRestClient(net::io_context& ioc,
             }
             NANO_LOG(DEBUG, "Fetching instrument list");
             client->getTradableInstruments(
-                [&ioc, &ctx, &strand, &client, &cfg]
+                [&ioc, &ctx, &strand, &client, &cfg, throttler]
                 (const json::object& obj, const beast::error_code& ec)
                 {
                     if(ec)
@@ -483,7 +481,7 @@ void launchRestClient(net::io_context& ioc,
                     }
 
                     NANO_LOG(ERROR, "Launching WebSocker client");
-                    launchWebSocketClient(ioc, ctx, strand, client, cfg);
+                    launchWebSocketClient(ioc, ctx, strand, client, cfg, throttler);
             });
         },
         10
@@ -544,14 +542,20 @@ int main(int argc, char** argv)
     char const* port = "9443";
     auto const path = "/stream";
 
+    auto taskScheduler = std::make_shared<Scheduler>();
     auto workerThread = std::make_shared<Worker>();
-    auto timer = std::make_shared<Timer>(std::make_shared<Scheduler>());
+    auto timer = std::make_shared<Timer>(taskScheduler);
+    auto throttler =
+    std::make_shared<ULMTTools::ReusableThrottledWorkerThread>(workerThread,
+        taskScheduler,
+        std::chrono::seconds(1),
+        5);
 
     net::io_context ioc;
     ssl::context ctx{ssl::context::tlsv12_client};
     net::strand<net::io_context::executor_type> strand{ioc.get_executor()};
 
-    launchRestClient(ioc, ctx, strand, cfg);
+    launchRestClient(ioc, ctx, strand, cfg, throttler);
 
     return 0;
 }

@@ -88,7 +88,7 @@ class session : public std::enable_shared_from_this<session>
 
     void on_resolve(beast::error_code ec, tcp::resolver::results_type results)
     {
-        if(ec && !on_error(ec, ErrorOrigin::Resolve)) return;
+        if(ec) { return on_error(ec, ErrorOrigin::Resolve); }
 
         // Set a timeout on the operation
         beast::get_lowest_layer(m_ws).expires_after(std::chrono::seconds(60));
@@ -104,7 +104,7 @@ class session : public std::enable_shared_from_this<session>
 
     void on_connect(beast::error_code ec, tcp::resolver::results_type::endpoint_type ep)
     {
-        if(ec && !on_error(ec, ErrorOrigin::Connect)) return;
+        if(ec) { return on_error(ec, ErrorOrigin::Connect); }
 
         std::string hostPort = m_host + ':' + std::to_string(ep.port());
 
@@ -114,7 +114,7 @@ class session : public std::enable_shared_from_this<session>
         {
             ec = beast::error_code(static_cast<int>(::ERR_get_error()),
                 net::error::get_ssl_category());
-            if(!on_error(ec, ErrorOrigin::Connect)) return;
+            return on_error(ec, ErrorOrigin::Connect);
         }
 
         beast::get_lowest_layer(m_ws).expires_after(std::chrono::seconds(30));
@@ -128,16 +128,23 @@ class session : public std::enable_shared_from_this<session>
 
     void on_ssl_handshake(beast::error_code ec)
     {
-        if(ec && !on_error(ec, ErrorOrigin::SSLHandshake)) return;
+        if(ec) { return on_error(ec, ErrorOrigin::SSLHandshake); }
 
         // Turn off the timeout on the tcp_stream, because
         // the websocket stream has its own timeout system.
         beast::get_lowest_layer(m_ws).expires_never();
 
-        // Set suggested timeout settings for the websocket
-        m_ws.set_option(
-            websocket::stream_base::timeout::suggested(
-                beast::role_type::client));
+        // suggested(client) sets idle_timeout=none and keep_alive_pings=false,
+        // which means a silent network drop is never detected. Set an explicit
+        // idle timeout with pings so Beast fires beast::error::timeout if the
+        // peer goes dark (→ classifyError maps that to Reconnect).
+        {
+            websocket::stream_base::timeout opt{};
+            opt.handshake_timeout = std::chrono::seconds(30);
+            opt.idle_timeout      = std::chrono::seconds(20);
+            opt.keep_alive_pings  = true;
+            m_ws.set_option(opt);
+        }
 
         // Set a decorator to change the User-Agent of the handshake
         m_ws.set_option(websocket::stream_base::decorator(
@@ -158,7 +165,7 @@ class session : public std::enable_shared_from_this<session>
 
     void on_handshake(beast::error_code ec)
     {
-        if(ec && !on_error(ec, ErrorOrigin::Handshake)) return;
+        if(ec) { on_error(ec, ErrorOrigin::Handshake); return; }
         m_connected = true;
         beast::get_lowest_layer(m_ws).expires_never();
         NANO_LOG(DEBUG, "[Binance WS] on_handshake");
@@ -179,6 +186,7 @@ class session : public std::enable_shared_from_this<session>
             m_readyCallback(beast::error_code());
         }
 
+        m_buffer.clear(); // discard any stale bytes from the previous connection
         read();
     }
 
@@ -191,7 +199,7 @@ class session : public std::enable_shared_from_this<session>
 
     void on_read(beast::error_code ec, size_t bytes_transferred)
     {
-        if(ec && !on_error(ec, ErrorOrigin::Read)) return;
+        if(ec) { return on_error(ec, ErrorOrigin::Read); }
         
         std::string payload = beast::buffers_to_string(m_buffer.data());
         m_buffer.consume(bytes_transferred);
@@ -210,14 +218,14 @@ class session : public std::enable_shared_from_this<session>
 
     void closeConnection()
     {
+        beast::error_code ec;
         if (m_ws.is_open())
         {
-            beast::error_code ec;
-            m_ws.close(websocket::close_code::normal, ec);   // graceful close
-
-            // if graceful close fails, force close the connection
-            if (ec) beast::get_lowest_layer(m_ws).close();
+            m_ws.close(websocket::close_code::normal, ec);
         }
+        // Always close the underlying TCP socket so that async_connect
+        // on the next run() call starts with a clean socket.
+        beast::get_lowest_layer(m_ws).close();
     }
 
     bool sendPendingSubs()
@@ -271,11 +279,11 @@ class session : public std::enable_shared_from_this<session>
         NANO_LOG(DEBUG, "Sent Command");
         boost::ignore_unused(bytes_transferred);
         m_inFlight = false;
-        if(ec && !on_error(ec, ErrorOrigin::Write))
+        if(ec)
         {
             m_PendingSubsInFlight = false;
             m_PendingunsubsInFlight = false;
-            return;
+            return on_error(ec, ErrorOrigin::Write);
         }
 
         if (!m_inFlightComand.empty())
@@ -319,36 +327,38 @@ class session : public std::enable_shared_from_this<session>
         }
     }
 
-    // True means continue with rest of the function
-    bool on_error(beast::error_code ec, const ErrorOrigin& origin)
+    void on_error(beast::error_code ec, const ErrorOrigin& origin)
     {
         auto action = classifyError(ec);
-
-        NANO_LOG(WARNING, "[Binance WS] %s: %s",
-                errorOriginToString(origin), ec.message().c_str());
 
         switch (action)
         {
             case ErrorAction::Ignore:
-                return true;
+                NANO_LOG(DEBUG, "[Binance WS] %s: %s (ignored)",
+                        errorOriginToString(origin), ec.message().c_str());
+                return;
 
             case ErrorAction::Retry:
             {
-                NANO_LOG(WARNING, "[Binance WS] Retrying operation");
+                NANO_LOG(WARNING, "[Binance WS] %s: %s — retrying",
+                        errorOriginToString(origin), ec.message().c_str());
                 m_timer.cancel();
                 handleRetry(origin);
-                return false;
+                return;
             }
 
             case ErrorAction::Reconnect:
             {
-                NANO_LOG(WARNING, "[Binance WS] Reconnecting");
+                NANO_LOG(WARNING, "[Binance WS] %s: %s — reconnecting",
+                        errorOriginToString(origin), ec.message().c_str());
 
                 m_timer.cancel();
                 closeConnection();
 
                 // reset state
                 m_inFlight = false;
+                m_PendingSubsInFlight = false;
+                m_PendingunsubsInFlight = false;
                 m_connected = false;
 
                 m_timer.expires_after(std::chrono::seconds(m_retryDelay_sec));
@@ -358,12 +368,13 @@ class session : public std::enable_shared_from_this<session>
                     self->run();
                 });
 
-                return false;
+                return;
             }
 
             case ErrorAction::Fatal:
             {
-                NANO_LOG(ERROR, "[Binance WS] Fatal error, shutting down");
+                NANO_LOG(ERROR, "[Binance WS] %s: %s — fatal, shutting down",
+                        errorOriginToString(origin), ec.message().c_str());
 
                 m_timer.cancel();
                 closeConnection();
@@ -371,11 +382,9 @@ class session : public std::enable_shared_from_this<session>
                 if (!m_connectedOnce)
                     m_readyCallback(ec);
 
-                return false;
+                return;
             }
         }
-
-        return false;
     }
 
     bool hasSubscriptions()
@@ -404,15 +413,15 @@ class session : public std::enable_shared_from_this<session>
         if (ec == ws::condition::protocol_violation)
             return ErrorAction::Reconnect;
 
+        // stream_truncated = peer closed TCP without TLS close_notify (common with Binance)
+        if (ec == net::ssl::error::stream_truncated)
+            return ErrorAction::Reconnect;
+
         if (ec.category() == net::error::get_ssl_category())
             return ErrorAction::Fatal;
 
         if (ec == net::error::connection_reset)
             return ErrorAction::Reconnect;
-
-        if (ec == net::error::would_block ||
-            ec == net::error::try_again)
-            return ErrorAction::Retry;
 
         return ErrorAction::Reconnect;
     }
@@ -433,7 +442,7 @@ class session : public std::enable_shared_from_this<session>
                 }
                 else
                 {
-                    if(!sendPendingSubs()) return sendPendingUnsubs();
+                    if(!sendPendingSubs()) sendPendingUnsubs();
                 }
             break;
             case ErrorOrigin::Read:

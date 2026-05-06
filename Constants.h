@@ -10,6 +10,8 @@
 enum class MetaEnum
 {
     MessageType,
+    ReqType,
+    RespType,
     Tags,
     ConfigTags,
     HeaderKey,
@@ -243,8 +245,6 @@ struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
     }
 };
 
-
-
 struct PriceType : StringEnum<MetaEnum::PriceType, PriceType>
 {
     static PriceType const& depth()
@@ -256,6 +256,24 @@ struct PriceType : StringEnum<MetaEnum::PriceType, PriceType>
     static PriceType const& trade()
     {
         static PriceType instance{"trade"};
+        return instance;    
+    }
+};
+
+struct ReqType : StringEnum<MetaEnum::ReqType, ReqType>
+{
+    static ReqType const& ping()
+    {
+        static ReqType instance{"ping"};
+        return instance;    
+    }
+};
+
+struct RespType : StringEnum<MetaEnum::RespType, RespType>
+{
+    static RespType const& pong()
+    {
+        static RespType instance{"pong"};
         return instance;    
     }
 };
@@ -617,6 +635,18 @@ struct HeaderKey : StringEnum<MetaEnum::HeaderKey, HeaderKey>
         return instance;
     }
 
+    static HeaderKey const& reqType()
+    { 
+        static HeaderKey instance{"reqType"};
+        return instance;
+    }
+
+    static HeaderKey const& respType()
+    { 
+        static HeaderKey instance{"respType"};
+        return instance;
+    }
+
     static HeaderKey const& isLast()
     { 
         static HeaderKey instance{"isLast"};
@@ -737,7 +767,8 @@ enum class APIError
     PayloadEmpty,
     SubscriptionFailed,
     InvalidInstrumentType,
-    NonExistentReqId
+    NonExistentReqId,
+    PongCallbackNotRegistered
 };
 
 inline std::optional<PriceType> strToPriceType(const std::string& priceType)

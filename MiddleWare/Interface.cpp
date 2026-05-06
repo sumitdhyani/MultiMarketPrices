@@ -1,5 +1,6 @@
 #include <NanoLogCpp17.h>
 #include <atomic>
+#include <cstdint>
 #include <librdkafka/rdkafka.h>
 #include <memory>
 #include <semaphore>
@@ -181,7 +182,8 @@ bool handleResponse(const std::string& topic,
     const Middleware::KeyValuePairs& headers,
     const std::string& msg,
     const ResponseCallback& responseCallback,
-    const ErrCallback& errCallback)
+    const ErrCallback& errCallback,
+    const std::optional<PongCallback>& pongCallback)
 {
     if (msgType != *MessageType::response() &&
         msgType != *MessageType::last_response())
@@ -211,6 +213,15 @@ bool handleResponse(const std::string& topic,
         try
         {
             reqId = std::stoull(reqIdStr);
+
+            if (auto respTypeIt = headers.find(HeaderKey::respType());
+                respTypeIt != headers.end() && respTypeIt->second == *RespType::pong())
+            {
+                if (pongCallback)
+                    (*pongCallback)(reqId);
+                return true;
+            }
+
             responseCallback(reqId, msg, isLast);
         }
         catch (const std::exception& e)
@@ -226,6 +237,30 @@ bool handleResponse(const std::string& topic,
     return true;
 }
 
+void handleSpecialRequest( const uint64_t& reqId,
+    const std::string& reqType,
+    const std::string& destTopic,
+    const std::string& body,
+    const ProducerFunc& producerFunc)
+{
+    
+    if (reqType == *ReqType::ping())
+    {
+        producerFunc(destTopic, 
+                    MessageType::response(),
+                    "Null",
+                    "",
+                    {{HeaderKey::respId(), std::to_string(reqId)},
+                     {HeaderKey::respType(), *RespType::pong()},
+                     {HeaderKey::isLast(), "1"},
+                    },
+                    [reqId](const RecordMetadata& recordMetadata, const Error& error) {
+                        if (error) {
+                            NANO_LOG(ERROR, "Eror while sending response for reqId: %lu, details: %s", reqId, error.message().c_str());
+                        }
+                    });
+    }
+}
 
 bool handleRequest(const std::string& topic,
     const int32_t& partition,
@@ -236,7 +271,8 @@ bool handleRequest(const std::string& topic,
     const std::string& msg,
     const RequestHandlerFunc& requestHandlerFunc,
     const ErrCallback& errCallback,
-    const PendingRequestBook_SPtr& pendingRequestBook)
+    const PendingRequestBook_SPtr& pendingRequestBook,
+    const ProducerFunc& producerFunc)
 {
     if (msgType != *MessageType::request())
     {
@@ -274,14 +310,26 @@ bool handleRequest(const std::string& topic,
     {
         errCallback(Error(RD_KAFKA_RESP_ERR_UNKNOWN, "Missing destTopic in request header"));
         return true;
-    }    
+    }
+
+    auto const& [_, destTopic] = *it;
+
+
+    it = headers.find(HeaderKey::reqType());
+    if (it != headers.end())
+    {
+        handleSpecialRequest(reqId,
+            it->second,
+            destTopic,
+            msg,
+            producerFunc);
+    }
     else
     {
-        auto const & [_, destTopic] = *it;
         pendingRequestBook->emplace(reqId, destTopic);
+        requestHandlerFunc(reqId, msg);
     } 
 
-    requestHandlerFunc(reqId, msg);
     return true;
 }
 
@@ -426,6 +474,7 @@ void initializeMiddleWare(const std::string& appId,
     const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
     const ResponseCallback& responseCallback,
     const RequestHandlerFunc& requestHandlerFunc,
+    const std::optional<PongCallback>& pongCallback,
     uint16_t minAvailableBrokers)
 {
     // Redirect Kafka library-level logs to NanoLog
@@ -605,7 +654,7 @@ void initializeMiddleWare(const std::string& appId,
     auto pendingRequestBook = std::make_shared<PendingRequestBook>();
 
     MsgCallback refinedMsgCallback =
-    [errCallback, responseCallback, requestHandlerFunc, msgCallback, pendingRequestBook]
+    [errCallback, responseCallback, requestHandlerFunc, msgCallback, pendingRequestBook, producerFunc, pongCallback]
     (const std::string& topic,
         const int32_t& partition,
         const int64_t& offset,
@@ -615,8 +664,8 @@ void initializeMiddleWare(const std::string& appId,
         const std::string& payload)
     {
 
-        if (!handleResponse(topic, partition, offset, msgType, key, headers, payload, responseCallback, errCallback)
-            && !handleRequest(topic, partition, offset, msgType, key, headers, payload, requestHandlerFunc, errCallback, pendingRequestBook))
+        if (!handleResponse(topic, partition, offset, msgType, key, headers, payload, responseCallback, errCallback, pongCallback)
+            && !handleRequest(topic, partition, offset, msgType, key, headers, payload, requestHandlerFunc, errCallback, pendingRequestBook, producerFunc))
         {
             msgCallback(topic, partition, offset, msgType, key, headers, payload);
         }
@@ -626,17 +675,30 @@ void initializeMiddleWare(const std::string& appId,
 
 
     RequestFunc requestFunc =
-    [producerFunc, appId](const uint64_t& reqId,
+    [producerFunc, appId, pongCallback](const uint64_t& reqId,
+        const std::optional<ReqType>& reqType,
         const std::string& payload,
         const std::string& targetTopic,
         const SendCallback& sendCallback)
     {
+        if (reqType && *reqType.value() == *ReqType::ping() && !pongCallback)
+            return APIError::PongCallbackNotRegistered;
+
+        std::unordered_map<HeaderKey,std::string> headers =
+            {{HeaderKey::reqId(), std::to_string(reqId)},
+            {HeaderKey::destTopic(), appId}
+            };
+        
+        if (reqType)
+        {
+            headers.emplace(HeaderKey::reqType(), *reqType.value());
+        }
+
         producerFunc(targetTopic,
                      MessageType::request(),
                     appId,
                     payload,
-                    {{HeaderKey::reqId(), std::to_string(reqId)},
-                     {HeaderKey::destTopic(), appId}},
+                    headers,
                     sendCallback);
         return APIError::Ok;
     };

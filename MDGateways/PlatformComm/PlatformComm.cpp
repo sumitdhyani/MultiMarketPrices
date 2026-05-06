@@ -60,6 +60,7 @@ void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
             uint64_t reqId = gen.generate64();
             NANO_LOG(DEBUG, "Requesting for group info for group: %s with reqId: %lu", group.c_str(), reqId);
             requestFunc(reqId,
+                        std::nullopt,
                         json::serialize(json::object{{
                             {*Tags::group_identifier(), group},
                             {*Tags::destination_topic(), appId}
@@ -416,6 +417,7 @@ void PlatformComm::init(const std::shared_ptr<MDRoutingMethods>& routing,
                 handleInstrumentListRequest(reqId, obj);
             }
         },
+        std::nullopt,
         minAvailableBrokers
     );
 }

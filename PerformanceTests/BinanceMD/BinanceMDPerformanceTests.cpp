@@ -149,6 +149,7 @@ int main(int argc, char** argv)
         { {MiddlewareConfig::bootstrap_servers(), brokers} },
         [](const uint64_t&, const std::string&, bool isLast){},
         [](const uint64_t&, const std::string&){},
+        std::nullopt,
         cfg.at(*ConfigTag::numMinBrokers()).as_int64());
 
     return 0;

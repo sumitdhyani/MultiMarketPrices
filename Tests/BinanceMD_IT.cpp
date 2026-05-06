@@ -159,6 +159,7 @@ static void sendInstrumentListRequest()
 {
     requestFunc(
         g_gen.generate64(),
+        std::nullopt,
         json::serialize(json::object{{*Tags::message_type(), *MessageType::instrument_request()}}),
         kOutTopic,
         sencCb
@@ -293,6 +294,7 @@ int main(int argc, char* argv[])
         { {MiddlewareConfig::bootstrap_servers(), brokers} },
         responseCb,
         [](const uint64_t&, const std::string&){},
+        std::nullopt,
         cfg.at(*ConfigTag::numMinBrokers()).as_int64()
     );
 

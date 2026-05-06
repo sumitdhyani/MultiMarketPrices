@@ -215,6 +215,7 @@ int main(int argc, char** argv)
                 true,
                 sendCb);
         },
+        std::nullopt,
         minBrokers
     );
 }

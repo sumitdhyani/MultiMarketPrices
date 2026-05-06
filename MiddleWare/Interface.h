@@ -36,8 +36,10 @@ namespace Middleware
                                                     const SendCallback&)>; // Sucess callback
 
     using ResponseCallback          = std::function<void(const uint64_t&, const std::string&, bool)>;
+    using PongCallback              = std::function<void(const uint64_t&)>;
 
     using RequestFunc               = std::function<APIError (const uint64_t&,  // ReqId
+                                                    const std::optional<ReqType>&,
                                                     const std::string&,         // Req payload
                                                     const std::string&,         // target topic
                                                     const SendCallback&)>;       
@@ -102,5 +104,6 @@ namespace Middleware
                             const std::unordered_map<MiddlewareConfig, std::string>& consumerProps,
                             const ResponseCallback& responseCallback,
                             const RequestHandlerFunc& requestHandlerFunc,
+                            const std::optional<PongCallback>& pongCallback,
                             const uint16_t minAvailableBrokers);
 }

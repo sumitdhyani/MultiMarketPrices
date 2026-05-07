@@ -28,12 +28,12 @@ namespace Middleware
 
     using LowLevelKeyValuePairs     = std::vector<std::tuple<const char*,const char*>>;
 
-    using ProducerFunc              = std::function<APIError (const std::string&,   // Topic
-                                                    const MessageType&,   // MessageType
-                                                    const std::string&,   // Key
-                                                    const std::string&,   // Message payload
-                                                    const KeyValuePairs&, // Headers
-                                                    const SendCallback&)>; // Sucess callback
+    using ProducerFunc              = std::function<APIError (const std::string& topic,   // Topic
+                                                    const MessageType& msgType,   // MessageType
+                                                    const std::string& key,   // Key
+                                                    const std::string& payload,   // Message payload
+                                                    const KeyValuePairs& kvPairs, // Headers
+                                                    const SendCallback& cb)>; // Sucess callback
 
     using ResponseCallback          = std::function<void(const uint64_t&, const std::string&, bool)>;
     using PongCallback              = std::function<void(const uint64_t&)>;

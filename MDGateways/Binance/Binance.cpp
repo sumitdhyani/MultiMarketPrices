@@ -7,9 +7,12 @@
 #include <ConfigLib/ConfigLib.h>
 #include <NanoLogCpp17.h>
 #include <boost/json/object.hpp>
+#include <boost/json/serialize.hpp>
 #include <chrono>
 #include <memory>
+#include <ranges>
 #include <string>
+#include <vector>
 
 using namespace NanoLog::LogLevels;
 
@@ -23,28 +26,28 @@ using Timer = ULMTTools::Timer;
 using Timer_SPtr = std::shared_ptr<Timer>;
 SymbolStore symbolStore;
 
-void initMiddleware(const std::shared_ptr<MDRoutingMethods>& routing,
-        const KeyGenFunc& keyGenFunc,
-        const std::string& brokers,
-        const Timer_SPtr& timer,
-        const Worker_SPtr& workerThread,
-        const Middleware::ErrCallback& initErrorCb,
-        const json::object& cfg)
-{
-    const std::string appId = cfg.at(*ConfigTag::appId()).as_string().c_str();
-    const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
-    const std::string inTopic = cfg.at(*ConfigTag::in_topic()).as_string().c_str();
+void initMiddleware(const std::shared_ptr<MDRoutingMethods> &routing,
+                    const KeyGenFunc &keyGenFunc,
+                    const KeyDisintegrationFunc &keyDisintegrationFunc,
+                    const std::string &brokers,
+                    const Timer_SPtr &timer, const Worker_SPtr &workerThread,
+                    const Middleware::ErrCallback &initErrorCb,
+                    const json::object &cfg) {
+  const std::string appId = cfg.at(*ConfigTag::appId()).as_string().c_str();
+  const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
+  const std::string inTopic = cfg.at(*ConfigTag::in_topic()).as_string().c_str();
 
-    PlatformComm::init(routing,
-        keyGenFunc,
-        brokers,
-        timer,
-        workerThread,
-        appId,
-        appGroup,
-        inTopic,
-        initErrorCb,
-        cfg.at(*ConfigTag::numMinBrokers()).as_int64());
+  PlatformComm::init(routing,
+                    keyGenFunc,
+                    keyDisintegrationFunc,
+                    brokers,
+                    timer,
+                    workerThread,
+                    appId,
+                    appGroup,
+                    inTopic,
+                    initErrorCb,
+                    cfg.at(*ConfigTag::numMinBrokers()).as_int64());
 }
 
 bool addKey(json::object& update)
@@ -82,19 +85,19 @@ bool addKey(json::object& update)
 
 bool transformForPlatform(json::object& update)
 {
-    if(!update.contains("s") || !update.contains("p") || !update.contains("q"))
+    if(!update.contains(*BinanceTag::symbol_websocket()) || !update.contains(*BinanceTag::price()) || !update.contains(*BinanceTag::quantity()))
     {
         // Log some error here about unexpected message format
         return false;
     }
 
-    update["symbol"] = update["s"].as_string();
-    update["price"] = update["p"].as_string();
-    update["quantity"] = update["q"].as_string();
+    update["symbol"] = update[*BinanceTag::symbol_websocket()].as_string();
+    update["price"] = update[*BinanceTag::price()].as_string();
+    update["quantity"] = update[*BinanceTag::quantity()].as_string();
     
-    update.erase("s");
-    update.erase("p");
-    update.erase("q");
+    update.erase(*BinanceTag::symbol_websocket());
+    update.erase(*BinanceTag::price());
+    update.erase(*BinanceTag::quantity());
     return true;
 }
 
@@ -248,8 +251,8 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
             const TradeSnapshotRequest& req = std::get<TradeSnapshotRequest>(data);
             getSnapshot(client, *req, PriceType::trade(),
                 [handler](const boost::json::object& snapshot, const std::string& err) {
-                    if (!err.empty()) return;
-                    handler(true, MDRespVariant{TradeSnapshot{json::serialize(snapshot)}});
+                    if (!err.empty()) handler(true, NullSnapShot(nullptr));
+                    else handler(true, MDRespVariant{TradeSnapshot{json::serialize(snapshot)}});
                 }
             );
         }
@@ -260,8 +263,8 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
             const DepthSnapshotRequest& req = std::get<DepthSnapshotRequest>(data);
             getSnapshot(client, *req, PriceType::depth(),
                 [handler](const boost::json::object& snapshot, const std::string& err) {
-                    if (!err.empty()) return;
-                    handler(true, MDRespVariant{DepthSnapshot{json::serialize(snapshot)}});
+                    if (!err.empty()) handler(true, NullSnapShot(nullptr));
+                    else handler(true, MDRespVariant{DepthSnapshot{json::serialize(snapshot)}});
                 }
             );
         }
@@ -300,9 +303,21 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
                 }, v);
     };
 
-    initMiddleware(routing, keyGenFunc, brokers, timer, workerThread,
-        [](const Middleware::Error& error){
-            NANO_LOG(DEBUG, "Error initializing middleware: %s", error.message().c_str());
+    KeyDisintegrationFunc keyDisintegrationFunc =
+    [](const std::string& key) -> std::tuple<std::string, std::string, std::string>
+    {
+        auto tokens = key |
+            std::views::split(':') | 
+            std::ranges::to<std::vector<std::string>>();
+        return {tokens[0], tokens[1], "BINANCE"};
+        
+    };
+
+    initMiddleware(
+        routing, keyGenFunc, keyDisintegrationFunc, brokers, timer, workerThread,
+        [](const Middleware::Error &error) {
+            NANO_LOG(DEBUG, "Error initializing middleware: %s",
+                    error.message().c_str());
         },
         cfg);
 }
@@ -414,6 +429,7 @@ void launchWebSocketClient(net::io_context& ioc,
     auto routing = std::make_shared<MDRoutingMethods>(updateRouter, controlRouter, reqResRouter);
 
     auto sessHolder = std::make_shared<std::shared_ptr<session>>();
+    static bool clientConnectedOnce = false;
 
     *sessHolder = std::make_shared<session>(strand,
         ctx,
@@ -423,8 +439,16 @@ void launchWebSocketClient(net::io_context& ioc,
         path,
         10,
         [sessHolder, client, &strand, &ioc, &cfg, routing](const beast::error_code& ec){
-            if (ec){ ioc.stop(); return;}
+            if (ec)
+            { 
+                if (!clientConnectedOnce) ioc.stop();
+                else routing->pubSubMethods.produceUpdate("", ConnectionClosedUpdate("*"));
+                return;
+            }
+            // It's a reconnection, no need to do anything
+            else if (clientConnectedOnce) return;
 
+            clientConnectedOnce = true;
             auto sess = *sessHolder;
             std::thread([sess, &strand, client, &cfg, routing](){
                 onGatewayConnected(sess,
@@ -447,17 +471,24 @@ void launchRestClient(net::io_context& ioc,
     const json::object& cfg,
     const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler)
 {
+    static bool clientConnectedOnce = false;
     std::shared_ptr<BinanceRestClient> client =
     std::make_shared<BinanceRestClient>(strand,
         ctx,
         [&ioc, &ctx, &strand, &client, &cfg, throttler]
         (const beast::error_code& ec){
-            if(ec)
+            if (ec)
             {
-                NANO_LOG(DEBUG, "Error in Rest client init phase: %s", ec.message().c_str());
-                ioc.stop();
+                if (!clientConnectedOnce)
+                {
+                    NANO_LOG(DEBUG, "Error in Rest client init phase: %s", ec.message().c_str());
+                    ioc.stop();
+                }
                 return;
             }
+            // It's a reconnection, no need to do anything
+            else if (clientConnectedOnce) return;
+            clientConnectedOnce = true;
             NANO_LOG(DEBUG, "Fetching instrument list");
             client->getTradableInstruments(
                 [&ioc, &ctx, &strand, &client, &cfg, throttler]

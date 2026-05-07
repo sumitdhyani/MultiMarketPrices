@@ -32,14 +32,14 @@ using GetPriceSnapshotFunc = std::function<void(const std::string&, const PriceT
 
 namespace PlatformComm
 {
-    void init(const std::shared_ptr<MDRoutingMethods>& routing,
-            const KeyGenFunc& keyGenFunc,
-            const std::string& brokers,
-            const std::shared_ptr<ULMTTools::Timer> timer,
-            const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
-            const std::string& appId,
-            const std::string& appGroup,
-            const std::string& inTopic,
-            const Middleware::ErrCallback& initErrorCb,
-            const uint16_t& minAvailableBrokers);
+void init(const std::shared_ptr<MDRoutingMethods> &routing,
+          const KeyGenFunc &keyGenFunc,
+          const KeyDisintegrationFunc &keyDisintegrationFunc,
+          const std::string &brokers,
+          const std::shared_ptr<ULMTTools::Timer> timer,
+          const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
+          const std::string &appId, const std::string &appGroup,
+          const std::string &inTopic,
+          const Middleware::ErrCallback &initErrorCb,
+          const uint16_t &minAvailableBrokers);
 }

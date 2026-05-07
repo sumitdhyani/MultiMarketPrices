@@ -74,7 +74,6 @@ class session : public std::enable_shared_from_this<session>
     bool m_PendingunsubsInFlight;
     std::string m_inFlightComand;
     bool m_connected;
-    bool m_connectedOnce;
     int m_msgNo;
     const uint32_t m_retryDelay_sec;
     std::set<std::string> m_liveSubscriptions;
@@ -180,11 +179,7 @@ class session : public std::enable_shared_from_this<session>
         else if(!sendPendingSubs()) sendPendingUnsubs();
         
         // Notify with null error
-        if(!m_connectedOnce)
-        {
-            m_connectedOnce = true;
-            m_readyCallback(beast::error_code());
-        }
+        m_readyCallback(beast::error_code());
 
         m_buffer.clear(); // discard any stale bytes from the previous connection
         read();
@@ -331,13 +326,16 @@ class session : public std::enable_shared_from_this<session>
     {
         auto action = classifyError(ec);
 
+        if (ErrorAction::Ignore == action)
+        {
+          NANO_LOG(DEBUG, "[Binance WS] %s: %s (ignored)",
+                   errorOriginToString(origin), ec.message().c_str());
+          return;
+        }
+
+        m_readyCallback(ec);
         switch (action)
         {
-            case ErrorAction::Ignore:
-                NANO_LOG(DEBUG, "[Binance WS] %s: %s (ignored)",
-                        errorOriginToString(origin), ec.message().c_str());
-                return;
-
             case ErrorAction::Retry:
             {
                 NANO_LOG(WARNING, "[Binance WS] %s: %s — retrying",
@@ -378,9 +376,6 @@ class session : public std::enable_shared_from_this<session>
 
                 m_timer.cancel();
                 closeConnection();
-
-                if (!m_connectedOnce)
-                    m_readyCallback(ec);
 
                 return;
             }
@@ -472,7 +467,6 @@ public:
         , m_priceCallback(priceCallback)
         , m_inFlight(false)
         , m_connected(false)
-        , m_connectedOnce(false)
         , m_host(host)
         , m_port(port)
         , m_path(path)

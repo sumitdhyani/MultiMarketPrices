@@ -88,6 +88,12 @@ struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
         return instance;
     }
 
+    static MessageType const& price_blanked()
+    {
+      static MessageType instance{"price_blanked"};
+      return instance;
+    }
+
     static MessageType const& heartBeat()
     { 
         static MessageType instance{"heartBeat"};

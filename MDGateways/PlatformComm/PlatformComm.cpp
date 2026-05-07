@@ -1,6 +1,7 @@
 #include <NanoLog.h>
 #include <NanoLogCpp17.h>
 #include <boost/json/array.hpp>
+#include <boost/json/object.hpp>
 #include <boost/json/serialize.hpp>
 #include <cstdint>
 #include <exception>
@@ -22,6 +23,7 @@ std::string appGroup;
 std::string inTopic;
 static std::shared_ptr<MDRoutingMethods> gRouting;
 static KeyGenFunc gKeyGenFunc;
+static KeyDisintegrationFunc gKeyDisintegrationFunc;
 std::unordered_map<std::string, std::unordered_set<std::string>> symbolToDestTopics;
 std::unordered_map<std::string, std::unordered_set<std::string>> destTopicToSymbols;
 
@@ -284,17 +286,42 @@ void runningErrorCb(const Middleware::Error& error) {
 
 void onPriceDataFromExchange(const std::string& key, const MDUpdateVariant& data)
 {
-    if (auto it = symbolToDestTopics.find(key); it != symbolToDestTopics.end())
+    if (key == "*") {
+      std::visit(
+          overload{
+              [](auto const &) {},
+              [](const ConnectionClosedUpdate &u) {
+                for (auto const &[key, destTopics] : symbolToDestTopics) {
+                  auto const &[symbol, type, exchange] =
+                      gKeyDisintegrationFunc(key);
+                  for (auto const &destTopic : destTopics) {
+                    json::object payloadObject{{*Tags::symbol(), symbol},
+                                               {*Tags::subscription_type(), type},
+                                               {*Tags::exchange(), exchange}};
+                    producerFunc(destTopic, MessageType::price_blanked(), "NULL",
+                                 json::serialize(payloadObject), {}, sencCb);
+                  }
+                }
+              }},
+          data);
+    }
+    else if (auto it = symbolToDestTopics.find(key); it != symbolToDestTopics.end())
     {
-        auto const& [msgType, payload] = std::visit(overload{
-            [](const TradeUpdate& u) { return std::pair{MessageType::trade_update(), *u}; },
-            [](const DepthUpdate& u) { return std::pair{MessageType::depth_update(), *u}; }
-        }, data);
-        
-        for (auto const& destTopic : it->second)
-        {
-            producerFunc(destTopic, msgType, key, payload, {}, sencCb);
-        }
+      std::visit(
+overload{
+            [it, &key](const TradeUpdate &u) {
+                for (auto const &destTopic : it->second) {
+                    producerFunc(destTopic, MessageType::trade_update(), key,*u, {}, sencCb);
+                }
+            },
+            [it, &key](const DepthUpdate &u) {
+                for (auto const &destTopic : it->second) {
+                    producerFunc(destTopic, MessageType::depth_update(), key, *u, {}, sencCb);
+                }
+            },
+            [](const ConnectionClosedUpdate&) {}},
+        data);
+
     }
     else
     {
@@ -304,9 +331,11 @@ void onPriceDataFromExchange(const std::string& key, const MDUpdateVariant& data
 
 void handlePriceRequest(const uint64_t& reqId, const json::object& obj)
 {
-    auto priceType = strToPriceType(obj.at(*Tags::subscription_type()).as_string().c_str());
-    if(!priceType) return;
+    const std::string priceTypeStr = obj.at(*Tags::subscription_type()).as_string().c_str();
+    auto priceType_opt = strToPriceType(priceTypeStr);
+    if(!priceType_opt) return;
 
+    auto priceType = *priceType_opt;
     bool isTrade = (*priceType == *PriceType::trade());
     MDReqType reqType = isTrade ? MDReqType::TradeSnapshot : MDReqType::DepthSnapshot;
     std::string symbol = obj.at(*Tags::symbol()).as_string().c_str();
@@ -314,15 +343,29 @@ void handlePriceRequest(const uint64_t& reqId, const json::object& obj)
         ? MDReqVariant{TradeSnapshotRequest{symbol}}
         : MDReqVariant{DepthSnapshotRequest{symbol}};
 
-    gRouting->reqResMethods.request(reqId, reqType, reqData,
-        [reqId](bool isLast, const MDRespVariant& resp) {
-            std::visit(overload{
-                [&](const TradeSnapshot& ts)   { respondFunc(reqId, *ts, isLast, sencCb); },
-                [&](const DepthSnapshot& ds)   { respondFunc(reqId, *ds, isLast, sencCb); },
-                [](const InstrumentRecord&) {}
-            }, resp);
-        }
-    );
+    gRouting->reqResMethods.request(
+        reqId, reqType, reqData,
+        [reqId, symbol = std::move(symbol), priceTypeStr = std::move(priceTypeStr)]
+        (bool isLast, const MDRespVariant &resp) {
+          std::visit(
+              overload{
+                  [&](const TradeSnapshot &ts) {
+                    respondFunc(reqId, *ts, isLast, sencCb);
+                  },
+                  [&](const DepthSnapshot &ds) {
+                    respondFunc(reqId, *ds, isLast, sencCb);
+                  },
+                  [](const InstrumentRecord &) {},
+                  [&](const NullSnapShot &) {
+                    json::object respPayload{{
+                        {*Tags::message_type(), *MessageType::price_blanked()},
+                        {*Tags::symbol(), symbol},
+                        {*Tags::subscription_type(), priceTypeStr},
+                    }};
+                    respondFunc(reqId, json::serialize(respPayload), isLast, sencCb);
+                  }},
+              resp);
+        });
 }
 
 void handleInstrumentListRequest(const uint64_t& reqId, const json::object& obj)
@@ -342,82 +385,64 @@ void handleInstrumentListRequest(const uint64_t& reqId, const json::object& obj)
     );
 }
 
-void PlatformComm::init(const std::shared_ptr<MDRoutingMethods>& routing,
-            const KeyGenFunc& keyGenFunc,
-            const std::string& brokers,
-            const std::shared_ptr<ULMTTools::Timer> timer,
-            const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
-            const std::string& appId,
-            const std::string& appGroup,
-            const std::string& inTopic,
-            const Middleware::ErrCallback& initErrorCb,
-            const uint16_t& minAvailableBrokers)
-{
-    ::appId = appId;
-    ::appGroup = appGroup;
-    ::inTopic = inTopic;
-    ::gRouting = routing;
-    ::gKeyGenFunc = keyGenFunc;
+void PlatformComm::init(
+    const std::shared_ptr<MDRoutingMethods> &routing,
+    const KeyGenFunc &keyGenFunc,
+    const KeyDisintegrationFunc &keyDisintegrationFunc,
+    const std::string &brokers, const std::shared_ptr<ULMTTools::Timer> timer,
+    const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
+    const std::string &appId, const std::string &appGroup,
+    const std::string &inTopic, const Middleware::ErrCallback &initErrorCb,
+    const uint16_t &minAvailableBrokers) {
+  ::appId = appId;
+  ::appGroup = appGroup;
+  ::inTopic = inTopic;
+  ::gRouting = routing;
+  ::gKeyGenFunc = keyGenFunc;
+  ::gKeyDisintegrationFunc = keyDisintegrationFunc;
 
-    static const uint64_t kPlatformCommId = 0;
-    routing->pubSubMethods.consumeAllUpdate(kPlatformCommId,
-        [workerThread](const std::string& key, const MDUpdateVariant& data) {
-            workerThread->push([key, data]() {
-                onPriceDataFromExchange(key, data);
-            });
+  static const uint64_t kPlatformCommId = 0;
+  routing->pubSubMethods.consumeAllUpdate(
+      kPlatformCommId,
+      [workerThread](const std::string &key, const MDUpdateVariant &data) {
+        workerThread->push(
+            [key, data]() { onPriceDataFromExchange(key, data); });
+      });
+
+  auto initCb = [](const Middleware::ProducerFunc &producerFunc,
+                   const Middleware::LowLevelProducerFunc &lowLevelProducerFunc,
+                   const Middleware::ConsumerFunc &groupConsumerFunc,
+                   const Middleware::ConsumerFunc &individualConsumerFunc,
+                   const Middleware::RequestFunc &requestFunc,
+                   const Middleware::RespondFunc &respondFunc,
+                   const Middleware::ShutdownFunc & /*shutdownFunc*/) {
+    ::producerFunc = producerFunc;
+    ::requestFunc = requestFunc;
+    ::respondFunc = respondFunc;
+
+    if (::inTopic != ::appId) {
+      groupConsumerFunc(::inTopic, rebalanceCallback);
+    }
+  };
+
+  std::string heartBeatStr = getHeartBeatMsg();
+  std::string appStr = getDescMsg();
+
+  NANO_LOG(DEBUG, "Initializing middleware");
+  Middleware::initializeMiddleWare(
+      appId, appGroup, [appStr]() { return appStr; },
+      [heartBeatStr]() { return heartBeatStr; }, 5, timer, workerThread, msgCb,
+      initCb, initErrorCb, {{MiddlewareConfig::bootstrap_servers(), brokers}},
+      {{MiddlewareConfig::bootstrap_servers(), brokers}}, responseCb,
+      [](const uint64_t &reqId, const std::string &payLoad) {
+        const json::object obj = json::parse(payLoad).as_object();
+        const std::string msgType =
+            obj.at(*Tags::message_type()).as_string().c_str();
+        if (msgType == *MessageType::price_request()) {
+          handlePriceRequest(reqId, obj);
+        } else if (msgType == *MessageType::instrument_request()) {
+          handleInstrumentListRequest(reqId, obj);
         }
-    );
-    
-    auto initCb =
-    [](const Middleware::ProducerFunc& producerFunc,
-            const Middleware::LowLevelProducerFunc& lowLevelProducerFunc,
-            const Middleware::ConsumerFunc& groupConsumerFunc,
-            const Middleware::ConsumerFunc& individualConsumerFunc,
-            const Middleware::RequestFunc& requestFunc,
-            const Middleware::RespondFunc& respondFunc,
-            const Middleware::ShutdownFunc& /*shutdownFunc*/)
-    {
-        ::producerFunc = producerFunc;
-        ::requestFunc = requestFunc;
-        ::respondFunc = respondFunc;
-        
-        if (::inTopic != ::appId)
-        {
-            groupConsumerFunc(::inTopic, rebalanceCallback);
-        }
-
-    };
-
-    std::string heartBeatStr = getHeartBeatMsg();
-    std::string appStr = getDescMsg();
-
-    NANO_LOG(DEBUG, "Initializing middleware");
-    Middleware::initializeMiddleWare(appId,
-        appGroup,
-        [appStr]() { return appStr; },
-        [heartBeatStr]() { return heartBeatStr; },
-        5,
-        timer,
-        workerThread,
-        msgCb,
-        initCb,
-        initErrorCb,
-        { {MiddlewareConfig::bootstrap_servers(), brokers} },
-        { {MiddlewareConfig::bootstrap_servers(), brokers} },
-        responseCb,
-        [](const uint64_t& reqId, const std::string& payLoad){
-            const json::object obj = json::parse(payLoad).as_object();
-            const std::string msgType = obj.at(*Tags::message_type()).as_string().c_str();
-            if (msgType == *MessageType::price_request())
-            {
-                handlePriceRequest(reqId, obj);
-            }
-            else if (msgType == *MessageType::instrument_request())
-            {
-                handleInstrumentListRequest(reqId, obj);
-            }
-        },
-        std::nullopt,
-        minAvailableBrokers
-    );
+      },
+      std::nullopt, minAvailableBrokers);
 }

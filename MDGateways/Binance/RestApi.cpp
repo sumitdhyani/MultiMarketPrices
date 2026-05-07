@@ -29,7 +29,6 @@ BinanceRestClient::BinanceRestClient(net::strand<net::io_context::executor_type>
     , m_resolver(strand)
     , m_timer(strand)
     , m_connected(false)
-    , m_connectedOnce(false)
     , m_readyCallback(readyHandler)
     , m_retryIntervalSec(retryIntervalSec)
 {}
@@ -118,12 +117,7 @@ void BinanceRestClient::on_handshake(beast::error_code ec)
         start_next_request();
     }
 
-    if(!m_connectedOnce)
-    {
-        m_connectedOnce = true;
-        // Reply with a null error
-        m_readyCallback(beast::error_code());
-    }
+    m_readyCallback(beast::error_code());
 }
 
 void BinanceRestClient::on_write(beast::error_code ec, std::size_t)
@@ -195,26 +189,25 @@ void BinanceRestClient::on_read(const Response& response, beast::error_code ec, 
 void BinanceRestClient::fail(beast::error_code ec, const char* what)
 {
     NANO_LOG(DEBUG, "[Binance REST] %s: %s", what, ec.message().c_str());
-    m_connected = false;
-
+    // The client was never connected
     // The session is to be terminated only if the clinet was never connected
     // if the session has once started, it should try to reconsile indefinitely
-    if (isFatalError(ec) && !m_connectedOnce)
+    if (!m_connected)
     {
-        NANO_LOG(DEBUG, "[Binance REST] Fatal error encountered. Closing connection.");
-        m_timer.cancel();
-        close_connection();
-        while (!m_queue.empty())
-        {
-            auto const& cb = m_queue.front().callback;
-            cb(json::object{}, ec);
-            m_queue.pop();
-        }
+      NANO_LOG(ERROR,"[Binance REST] Fatal error encountered. Closing connection.");
+      m_timer.cancel();
+      close_connection();
+      while (!m_queue.empty()) {
+        auto const &cb = m_queue.front().callback;
+        cb(json::object{}, ec);
+        m_queue.pop();
+      }
 
-        m_readyCallback(ec);
-        return;
+      m_readyCallback(ec);
+      return;
     }
-    
+
+    m_connected = false;    
     m_resolver  = tcp::resolver(m_strand);
     m_stream    = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(m_strand, m_ctx); 
     m_timer.cancel();
@@ -242,6 +235,11 @@ void BinanceRestClient::getExchangeInfo(const Callback& cb)         { launch_req
 
 void BinanceRestClient::getDepth(const std::string& symbol, int limit, const Callback& cb)
 {
+    if (!m_connected)
+    {
+        cb({}, boost::system::error_code(boost::asio::error::no_data));
+        return;
+    }
     NANO_LOG(DEBUG, "[Binance REST] Queueing getDepth request for symbol: %s with limit: %d", symbol.c_str(), limit);
     std::string q = "symbol=" + symbol + "&limit=" + std::to_string(limit);
     launch_request("/depth", http::verb::get, q, cb);
@@ -249,18 +247,33 @@ void BinanceRestClient::getDepth(const std::string& symbol, int limit, const Cal
 
 void BinanceRestClient::getRecentTrades(const std::string& symbol, int limit, const Callback& cb)
 {
+    if (!m_connected)
+    {
+        cb({}, boost::system::error_code(boost::asio::error::no_data));
+        return;
+    }
     std::string q = "symbol=" + symbol + "&limit=" + std::to_string(limit);
     launch_request("/trades", http::verb::get, q, cb);
 }
 
 void BinanceRestClient::getTickerPrice(const std::string& symbol, const Callback& cb)
 {
+    if (!m_connected)
+    {
+        cb({}, boost::system::error_code(boost::asio::error::no_data));
+        return;
+    }
     std::string q = symbol.empty() ? "" : "symbol=" + symbol;
     launch_request("/ticker/price", http::verb::get, q, cb);
 }
 
 void BinanceRestClient::get24hrTicker(const std::string& symbol, const Callback& cb)
 {
+    if (!m_connected)
+    {
+        cb({}, boost::system::error_code(boost::asio::error::no_data));
+        return;
+    }
     std::string q = symbol.empty() ? "" : "symbol=" + symbol;
     launch_request("/ticker/24hr", http::verb::get, q, cb);
 }
@@ -270,15 +283,20 @@ void BinanceRestClient::getKlines(const std::string& symbol,
                                   int limit,
                                   const Callback& cb)
 {
-    std::string q = "symbol=" + symbol +
-                    "&interval=" + interval +
-                    "&limit=" + std::to_string(limit);
-    launch_request("/klines", http::verb::get, q, cb);
+  if (!m_connected)
+  {
+    cb({}, boost::system::error_code(boost::asio::error::no_data));
+    return;
+  }
+  std::string q = "symbol=" + symbol + "&interval=" + interval +
+                  "&limit=" + std::to_string(limit);
+  launch_request("/klines", http::verb::get, q, cb);
 }
 
 void BinanceRestClient::getTradableInstruments(const Callback& cb)
 {
-    launch_request("/exchangeInfo", http::verb::get, "", cb);
+    if (!m_connected) cb({}, boost::system::error_code(boost::asio::error::no_data));
+    else launch_request("/exchangeInfo", http::verb::get, "", cb);
 }
 
 void processCommand(const std::string& command,

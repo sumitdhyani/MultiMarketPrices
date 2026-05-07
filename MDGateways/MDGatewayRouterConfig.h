@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -20,8 +21,9 @@ overload(Ts...) -> overload<Ts...>;
 
 // --- Price update data types (Exchange → Platform) ---
 struct TradeUpdate  : TypeWrapper<std::string>{};
-struct DepthUpdate  : TypeWrapper<std::string>{};
-using MDUpdateVariant = std::variant<TradeUpdate, DepthUpdate>;
+struct DepthUpdate : TypeWrapper<std::string> {};
+struct ConnectionClosedUpdate : TypeWrapper<std::string> {};
+using MDUpdateVariant = std::variant<TradeUpdate, DepthUpdate, ConnectionClosedUpdate>;
 
 // --- Sub/unsub command types (Platform → Exchange) ---
 // The wrapped json::object carries the full request so KeyGen can extract the routing key
@@ -31,10 +33,13 @@ using SubUnsubVariant = std::variant<SubRequest, UnsubRequest>;
 
 // Key derivation: generates a routing key from either a price update or a sub/unsub command
 using KeyGenFunc = std::function<std::optional<std::string>(const SubUnsubVariant&)>;
+// Generate a tuple of [symbol, type, exchange] from key
+using KeyDisintegrationFunc = std::function<std::tuple<std::string, std::string, std::string>(const std::string&)>;
 
 // --- Snapshot request types (Platform → Exchange) ---
 struct TradeSnapshotRequest : TypeWrapper<std::string>{};  // wraps symbol
-struct DepthSnapshotRequest : TypeWrapper<std::string>{};  // wraps symbol
+struct DepthSnapshotRequest : TypeWrapper<std::string> {}; // wraps symbol
+struct NullSnapShot : TypeWrapper<std::nullptr_t> {}; // wraps symbol
 struct InstrumentListRequest{};
 using MDReqVariant = std::variant<TradeSnapshotRequest, DepthSnapshotRequest, InstrumentListRequest>;
 
@@ -42,7 +47,7 @@ using MDReqVariant = std::variant<TradeSnapshotRequest, DepthSnapshotRequest, In
 struct TradeSnapshot    : TypeWrapper<std::string>{};
 struct DepthSnapshot    : TypeWrapper<std::string>{};
 struct InstrumentRecord : TypeWrapper<std::string>{};
-using MDRespVariant = std::variant<TradeSnapshot, DepthSnapshot, InstrumentRecord>;
+using MDRespVariant = std::variant<TradeSnapshot, DepthSnapshot, InstrumentRecord, NullSnapShot>;
 
 enum class MDReqType { TradeSnapshot, DepthSnapshot, InstrumentList };
 

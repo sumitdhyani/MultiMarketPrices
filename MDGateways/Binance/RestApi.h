@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http/parser_fwd.hpp>
 #include <boost/beast/ssl.hpp>
@@ -112,7 +113,6 @@ private:
     const uint16_t m_retryIntervalSec;
     std::queue<PendingRequest> m_queue;
     bool m_connected;
-    bool m_connectedOnce;
 
     beast::flat_buffer m_buffer;
     http::request<http::string_body> m_request;

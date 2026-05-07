@@ -91,7 +91,7 @@ struct ConsumptionLoop
             });
             }
 
-            m_consumer.commitSync();
+            m_consumer.commitAsync();
         }
 
 
@@ -121,58 +121,6 @@ struct ConsumptionLoop
     std::atomic<bool> m_running;
     std::binary_semaphore m_killed;
 };
-
-void consumptionThread(KafkaConsumer& consumer,
-                        Worker& worker,
-                        const MsgCallback& msgCallback,
-                        const ErrCallback& errCb,
-                        const std::shared_ptr<std::atomic<bool>>& running)
-{
-    while(*running)
-    {
-        auto records = consumer.poll(std::chrono::milliseconds(100));
-        for (const auto& record : records)
-        {
-            if(auto err = record.error(); err)
-            {
-                errCb(err);
-                continue;
-            }
-
-            const std::string& topic = record.topic();
-            const int32_t& partition = record.partition();
-            const int64_t& offset = record.offset();
-            const std::string& key = record.key().toString();
-            const std::string& value = record.value().toString();
-
-            KeyValuePairs headers;
-            for (auto const& [key, value] : record.headers())
-            {
-                headers.emplace(key, value.toString());
-            }
-
-            std::string msgType;
-            if (headers.find(HeaderKey::message_type()) != headers.end())
-            {
-                msgType = headers[HeaderKey::message_type()];
-            }
-
-            worker.push([topic=std::move(topic),
-                        partition,
-                        offset,
-                        msgType = std::move(msgType),
-                        key = std::move(key),
-                        headers = std::move(headers),
-                        value = std::move(value),
-                        msgCallback = msgCallback]()
-            {
-                msgCallback( topic, partition, offset, msgType, key, headers, value);
-            });
-        }
-
-        consumer.commitSync();
-    }
-}
 
 bool handleResponse(const std::string& topic,
     const int32_t& partition,

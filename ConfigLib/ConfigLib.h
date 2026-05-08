@@ -24,8 +24,8 @@ namespace Config
     using ConfigValidator = std::function<bool(const json::object& config)>;
 
     std::optional<json::object> init(const std::string& appId,
-        const ConfigListener& configListener,
-        const ConfigValidator& configValidator);
+        const std::optional<ConfigListener>& configListener,
+        const std::optional<ConfigValidator>& configValidator);
 
     void stop();
 }

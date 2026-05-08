@@ -1,5 +1,9 @@
+#include <NanoLog.h>
+#include <NanoLogCpp17.h>
 #include <boost/asio/buffer.hpp>
+#include <boost/json/object.hpp>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <sys/inotify.h>
 #include <thread>
@@ -191,16 +195,31 @@ std::optional<json::object> createConfig(const std::string& appId)
     return flattenned;
 }
 
+void updateLogLevel(const json::object& cfg)
+{
+    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
+    if (auto const& level_opt = strToLogLevel(logLevelStr); level_opt)
+    {
+        auto const& level = *level_opt;
+        Logging::setLoggingLevel(level);
+    }
+    else [[unlikely]]
+    {
+        NANO_LOG(WARNING, "Invalid loggibg level in updated config: %s", logLevelStr.c_str());
+    }
+}
+
 void onConfigUpdate(const std::string& appId,
-    const ConfigListener& configListener,
-    const ConfigValidator& configValidator)
+    const std::optional<ConfigListener>& configListener,
+    const std::optional<ConfigValidator>& configValidator)
 {
     NANO_LOG(DEBUG, "Config updated");
     auto cfg_opt = createConfig(appId);
-    if(cfg_opt && configValidator(*cfg_opt))
+    if(cfg_opt && configValidator? (*configValidator)(*cfg_opt) : true)
     {
         std::cout << "New cfg: " << json::serialize(*cfg_opt) << std::endl;
-        configListener(*cfg_opt);
+        updateLogLevel(*cfg_opt);
+        configListener? (*configListener)(*cfg_opt) : void();
     }
     else
     {
@@ -208,10 +227,9 @@ void onConfigUpdate(const std::string& appId,
     }
 }
 
-
 std::optional<json::object> init(const std::string& appId,
-    const ConfigListener& configListener,
-    const ConfigValidator& configValidator)
+    const std::optional<ConfigListener>& configListener,
+    const std::optional<ConfigValidator>& configValidator)
 {
     auto cfg_opt = createConfig(appId);
     if(cfg_opt)
@@ -221,6 +239,32 @@ std::optional<json::object> init(const std::string& appId,
     else
     {
         std::cout << "Error with new cfg" << std::endl;
+        
+        auto cfg = *cfg_opt;
+        std::string logLevelStr;
+        if (!cfg.contains(*ConfigTag::logLevel()))
+        {
+          std::cout << "logLevel tag not present in config " << logLevelStr
+                    << ", should be one of ERROR, WARNING, INFO, DEBUG, case "
+                       "insensitive"
+                    << std::endl;
+
+          return std::nullopt;
+        }
+
+        logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
+        auto logLevel_opt = strToLogLevel(logLevelStr);
+        if (!logLevel_opt)
+        {
+            std::cout << "Invalid log level: " << logLevelStr
+                    << ", should be one of ERROR, WARNING, INFO, DEBUG, case "
+                       "insensitive" << std::endl;
+            
+            return std::nullopt;
+        }
+
+        auto const &logLevel = *logLevel_opt;
+        Logging::init(appId, logLevel);
         return cfg_opt;
     }
 

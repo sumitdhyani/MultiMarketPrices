@@ -119,7 +119,7 @@ void subscribe(const std::shared_ptr<session>& sess,
     const std::string& key)
 {
     auto tokens = key |
-                 std::views::split(':') | 
+                 std::views::split(':') |
                  std::ranges::to<std::vector<std::string>>();
 
     if (tokens.size() < 2)
@@ -545,29 +545,11 @@ int main(int argc, char** argv)
     }
 
     const std::string appId = argv[1];
-    auto const& cfg_opt = Config::init(appId, onConfigUpdate, validateConfig);
-    if (!cfg_opt)
-    {
-        return 1;
+    auto const &cfg_opt = Config::init(appId, std::nullopt, std::nullopt);
+    if (!cfg_opt) {
+      return 1;
     }
-
-    auto const& cfg = *cfg_opt;
-    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
-    auto logLevel_opt = strToLogLevel(logLevelStr);
-    if (!logLevel_opt)
-    {
-        std::cout << "Invalid log level: " << logLevelStr
-                  << ", should be one of ERROR, WARNING, INFO, DEBUG, case insensitive" << std::endl;
-    }
-
-    auto const& logLevel = *logLevel_opt;
-    Logging::init(appId, logLevel);
-
-    if (argc < 2)
-    {
-        NANO_LOG(DEBUG, "Usage: %s <available_brokers>", argv[0]);
-        return 1;
-    }
+    auto cfg = *cfg_opt;
 
     char const* host = "stream.binance.com";
     char const* port = "9443";

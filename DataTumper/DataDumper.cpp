@@ -1,6 +1,7 @@
 #include <boost/json/object.hpp>
 #include <cstdint>
 #include <iostream>
+#include <optional>
 #include <ranges>
 #include <stdint.h>
 #include <boost/json.hpp>
@@ -117,12 +118,6 @@ bool validateConfig(const json::object& cfg)
 
 void onConfigUpdate(const json::object& cfg)
 {
-    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
-    if (auto const& level_opt = strToLogLevel(logLevelStr); level_opt)
-    {
-        auto const& level = *level_opt;
-        Logging::setLoggingLevel(level);
-    }
 }
 
 int main(int argc, char* argv[])
@@ -133,24 +128,12 @@ int main(int argc, char* argv[])
     }
     const std::string appId = argv[1];
 
-    auto const& cfg_opt = Config::init(appId, onConfigUpdate, validateConfig);
+    auto const& cfg_opt = Config::init(appId, std::nullopt, std::nullopt);
     if (!cfg_opt)
     {
         return 1;
     }
-
-    auto const& cfg = *cfg_opt;
-    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
-    auto logLevel_opt = strToLogLevel(logLevelStr);
-    if (!logLevel_opt)
-    {
-        std::cout << "Invalid log level: " << logLevelStr
-                  << ", should be one of ERROR, WARNING, INFO, DEBUG, case insensitive" << std::endl;
-    }
-
-    auto const& logLevel = *logLevel_opt;
-    Logging::init(appId, logLevel);
-
+    auto cfg = *cfg_opt;
     auto scheduler = std::make_shared<ULMTTools::TaskScheduler>();
     auto timer =  std::make_shared<ULMTTools::Timer>(scheduler);
     

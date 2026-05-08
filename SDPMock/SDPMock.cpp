@@ -140,23 +140,11 @@ int main(int argc, char** argv)
     }
     const std::string appId = argv[1];
 
-    auto const& cfg_opt = Config::init(appId, onConfigUpdate, validateConfig);
-    if (!cfg_opt)
-    {
-        return 1;
+    auto const &cfg_opt = Config::init(appId, std::nullopt, std::nullopt);
+    if (!cfg_opt) {
+      return 1;
     }
-
-    auto const& cfg = *cfg_opt;
-    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
-    auto logLevel_opt = strToLogLevel(logLevelStr);
-    if (!logLevel_opt)
-    {
-        std::cout << "Invalid log level: " << logLevelStr
-                  << ", should be one of ERROR, WARNING, INFO, DEBUG, case insensitive" << std::endl;
-    }
-
-    auto const& logLevel = *logLevel_opt;
-    Logging::init(appId, logLevel);
+    auto cfg = *cfg_opt;
     const uint16_t minBrokers = cfg.at(*ConfigTag::numMinBrokers()).as_int64();
 
 
@@ -180,12 +168,14 @@ int main(int argc, char** argv)
         groupConsumerFunc(*Topic::pubSub_sync_data_requests(), std::nullopt);
     };
 
-    std::string heartBeatStr = getHeartBeatMsg();
-    std::string appStr = getDescMsg();
+    const std::string heartBeatStr = getHeartBeatMsg();
+    const std::string appStr = getDescMsg();
 
-    std::string brokers = "127.0.0.1:9092";
+    const std::string brokers = cfg.at(*ConfigTag::brokers()).as_string().c_str();
+    const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
+
     NANO_LOG(DEBUG, "Initializing middleware");
-    Middleware::initializeMiddleWare("SDPMock_1",
+    Middleware::initializeMiddleWare(appId,
         "SDPMock",
         [appStr]() { return appStr; },
         [heartBeatStr]() { return heartBeatStr; },

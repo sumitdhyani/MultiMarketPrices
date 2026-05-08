@@ -30,6 +30,8 @@ using IntrumentListCallback = std::function<void(const SymbolStore&)>;
 using GetInstrumentListFunc = std::function<void(const IntrumentListCallback&)>;
 using GetPriceSnapshotFunc = std::function<void(const std::string&, const PriceType&, const SnapshotCallback&)>;
 
+static const std::string INSTRUMENT_WILD_CARD = "*";
+
 namespace PlatformComm
 {
 void init(const std::shared_ptr<MDRoutingMethods> &routing,

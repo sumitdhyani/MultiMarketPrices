@@ -9,6 +9,7 @@
 #include <boost/asio/strand.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/json.hpp>
+#include <cstdint>
 #include <queue>
 #include <functional>
 #include <string>
@@ -30,6 +31,9 @@ public:
 
     explicit BinanceRestClient(net::strand<net::io_context::executor_type>& strand,
         ssl::context& ctx,
+        const std::string& host,
+        const std::string& port,
+        const std::string& api_version,
         const std::function<void(const beast::error_code&)>& readyHandler,
         const uint16_t& retryIntervalSec);
 
@@ -91,9 +95,9 @@ private:
         scheduleKeepAlive();
     }
     
-    const std::string m_host = "api.binance.com";
-    const std::string m_port = "443";
-    const std::string m_api_version = "/api/v3";
+    const std::string m_host;
+    const std::string m_port;
+    const std::string m_api_version;
     net::steady_timer m_timer;
 
     // Persistent connection

@@ -309,7 +309,7 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
         auto tokens = key |
             std::views::split(':') | 
             std::ranges::to<std::vector<std::string>>();
-        return {tokens[0], tokens[1], "BINANCE"};
+        return {tokens[0], tokens[1], EXCHANGE_ID};
         
     };
 
@@ -419,9 +419,9 @@ void launchWebSocketClient(net::io_context& ioc,
     const json::object& cfg,
     const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler)
 {
-    char const* host = "stream.binance.com";
-    char const* port = "9443";
-    auto const path = "/stream";
+    const std::string host = cfg.at(*BinanceConfigTag::wsHost()).as_string().c_str();
+    const std::string port = std::to_string(cfg.at(*BinanceConfigTag::wsPort()).as_int64());
+    const std::string path = cfg.at(*BinanceConfigTag::wsPath()).as_string().c_str();
 
     auto updateRouter  = std::make_shared<MDUpdateRouter>();
     auto controlRouter = std::make_shared<MDControlRouter>();
@@ -442,7 +442,7 @@ void launchWebSocketClient(net::io_context& ioc,
             if (ec)
             { 
                 if (!clientConnectedOnce) ioc.stop();
-                else routing->pubSubMethods.produceUpdate("", ConnectionClosedUpdate("*"));
+                else routing->pubSubMethods.produceUpdate("", ConnectionClosedUpdate(INSTRUMENT_WILD_CARD));
                 return;
             }
             // It's a reconnection, no need to do anything
@@ -472,9 +472,16 @@ void launchRestClient(net::io_context& ioc,
     const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler)
 {
     static bool clientConnectedOnce = false;
+    const std::string host          = cfg.at(*BinanceConfigTag::restHost()).as_string().c_str();
+    const std::string port          = std::to_string(cfg.at(*BinanceConfigTag::restPort()).as_int64());
+    const std::string api_version   = cfg.at(*BinanceConfigTag::restApiVersion()).as_string().c_str();
+
     std::shared_ptr<BinanceRestClient> client =
     std::make_shared<BinanceRestClient>(strand,
         ctx,
+        host,
+        port,
+        api_version,
         [&ioc, &ctx, &strand, &client, &cfg, throttler]
         (const beast::error_code& ec){
             if (ec)
@@ -550,10 +557,6 @@ int main(int argc, char** argv)
       return 1;
     }
     auto cfg = *cfg_opt;
-
-    char const* host = "stream.binance.com";
-    char const* port = "9443";
-    auto const path = "/stream";
 
     auto taskScheduler = std::make_shared<Scheduler>();
     auto workerThread = std::make_shared<Worker>();

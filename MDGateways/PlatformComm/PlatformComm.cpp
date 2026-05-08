@@ -286,7 +286,7 @@ void runningErrorCb(const Middleware::Error& error) {
 
 void onPriceDataFromExchange(const std::string& key, const MDUpdateVariant& data)
 {
-    if (key == "*") {
+    if (key == INSTRUMENT_WILD_CARD) {
       std::visit(
           overload{
               [](auto const &) {},

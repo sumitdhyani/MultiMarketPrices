@@ -4,6 +4,8 @@
 #include "WebSockets.h"
 #include "RestApi.h"
 
+static const std::string EXCHANGE_ID = "BINANCE"; 
+
 struct BinancePriceType : StringEnum<MetaEnum::PriceType, BinancePriceType>
 {
     static BinancePriceType const& trade()
@@ -17,6 +19,45 @@ struct BinancePriceType : StringEnum<MetaEnum::PriceType, BinancePriceType>
         static BinancePriceType instance{"depthUpdate"};
         return instance;
     }
+};
+
+struct BinanceConfigTag : StringEnum<MetaEnum::ConfigTags, BinanceConfigTag>
+{
+  static BinanceConfigTag const &wsHost()
+  {
+    static BinanceConfigTag instance{"wsHost"};
+    return instance;
+  }
+
+  static BinanceConfigTag const &wsPort()
+  {
+    static BinanceConfigTag instance{"wsPort"};
+    return instance;
+  }
+
+  static BinanceConfigTag const &wsPath()
+  {
+    static BinanceConfigTag instance{"wsPath"};
+    return instance;
+  }
+
+  static BinanceConfigTag const &restHost()
+  {
+    static BinanceConfigTag instance{"restHost"};
+    return instance;
+  }
+
+  static BinanceConfigTag const &restPort()
+  {
+    static BinanceConfigTag instance{"restPort"};
+    return instance;
+  }
+
+  static BinanceConfigTag const &restApiVersion()
+  {
+    static BinanceConfigTag instance{"restApiVersion"}; 
+    return instance;
+  }
 };
 
 struct BinanceTag : StringEnum<MetaEnum::Tags, BinanceTag>

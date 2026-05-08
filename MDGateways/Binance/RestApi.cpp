@@ -21,10 +21,16 @@ using namespace NanoLog::LogLevels;
 
 BinanceRestClient::BinanceRestClient(net::strand<net::io_context::executor_type>& strand,
         ssl::context& ctx,
+        const std::string& host,
+        const std::string& port, 
+        const std::string& api_version,
         const std::function<void(const beast::error_code&)>& readyHandler,
         const uint16_t& retryIntervalSec)
     : m_strand(strand)
     , m_ctx(ctx)
+    , m_host(host)
+    , m_port(port)
+    , m_api_version(api_version)
     , m_stream(std::make_unique<beast::ssl_stream<beast::tcp_stream>>(strand, ctx))
     , m_resolver(strand)
     , m_timer(strand)

@@ -74,6 +74,7 @@ class session : public std::enable_shared_from_this<session>
     bool m_PendingunsubsInFlight;
     std::string m_inFlightComand;
     bool m_connected;
+    bool m_connectedOnce;
     int m_msgNo;
     const uint32_t m_retryDelay_sec;
     std::set<std::string> m_liveSubscriptions;
@@ -166,6 +167,7 @@ class session : public std::enable_shared_from_this<session>
     {
         if(ec) { on_error(ec, ErrorOrigin::Handshake); return; }
         m_connected = true;
+        m_connectedOnce = true;
         beast::get_lowest_layer(m_ws).expires_never();
         NANO_LOG(DEBUG, "[Binance WS] on_handshake");
         // Send the stream subscriptions that were live when the connection was live
@@ -369,6 +371,7 @@ class session : public std::enable_shared_from_this<session>
                 return;
             }
 
+            // We get this only the case when the client hasn't connected even once(see the implemantation of "classifyError")
             case ErrorAction::Fatal:
             {
                 NANO_LOG(ERROR, "[Binance WS] %s: %s — fatal, shutting down",
@@ -392,33 +395,15 @@ class session : public std::enable_shared_from_this<session>
         using namespace boost::asio;
         using namespace beast;
         namespace ws = websocket;
-
-        if (ec == net::error::operation_aborted)
-            return ErrorAction::Ignore;
-
-        if (ec == ws::error::closed)
-            return ErrorAction::Reconnect;
-
-        if (ec == beast::error::timeout)
-            return ErrorAction::Reconnect;
-
-        if (ec == ws::condition::handshake_failed)
-            return ErrorAction::Fatal;
-
-        if (ec == ws::condition::protocol_violation)
-            return ErrorAction::Reconnect;
-
-        // stream_truncated = peer closed TCP without TLS close_notify (common with Binance)
-        if (ec == net::ssl::error::stream_truncated)
-            return ErrorAction::Reconnect;
-
-        if (ec.category() == net::error::get_ssl_category())
-            return ErrorAction::Fatal;
-
-        if (ec == net::error::connection_reset)
-            return ErrorAction::Reconnect;
-
-        return ErrorAction::Reconnect;
+        
+        return (ec == net::error::operation_aborted)?
+            ErrorAction::Ignore:
+        m_connectedOnce?
+            ErrorAction::Reconnect:
+        (ec == ws::condition::handshake_failed ||
+         ec.category() == net::error::get_ssl_category())?
+            ErrorAction::Fatal:
+        ErrorAction::Reconnect;            
     }
 
     void handleRetry(ErrorOrigin origin)
@@ -467,6 +452,7 @@ public:
         , m_priceCallback(priceCallback)
         , m_inFlight(false)
         , m_connected(false)
+        , m_connectedOnce(false)
         , m_host(host)
         , m_port(port)
         , m_path(path)
@@ -690,4 +676,8 @@ public:
                 shared_from_this()));
     }
 
+    void stop()
+    {
+        closeConnection();
+    }
 };

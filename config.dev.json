@@ -19,7 +19,8 @@
             "restApiVersion":"/api/v3",
             "wsHost":"stream.binance.com",
             "wsPort":9443,
-            "wsPath": "/stream"
+            "wsPath": "/stream",
+            "wsThrottleRatePerSec": 5
         },
         
         "DataDumper": {},

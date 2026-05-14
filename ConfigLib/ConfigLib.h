@@ -25,7 +25,7 @@ namespace Config
 
     std::optional<json::object> init(const std::string& appId,
         const std::optional<ConfigListener>& configListener,
-        const std::optional<ConfigValidator>& configValidator);
+        const ConfigValidator& configValidator);
 
     void stop();
 }

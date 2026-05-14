@@ -1,4 +1,5 @@
 #include <NanoLog.h>
+#include <boost/asio/error.hpp>
 #include <boost/beast/core/error.hpp>
 #include <boost/json/array.hpp>
 #include <boost/json/object.hpp>
@@ -6,6 +7,7 @@
 #include <boost/system/detail/error_code.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <stdatomic.h>
 #include <thread>
@@ -35,6 +37,7 @@ BinanceRestClient::BinanceRestClient(net::strand<net::io_context::executor_type>
     , m_resolver(strand)
     , m_timer(strand)
     , m_connected(false)
+    , m_connectedOnce(false)
     , m_readyCallback(readyHandler)
     , m_retryIntervalSec(retryIntervalSec)
 {}
@@ -114,6 +117,7 @@ void BinanceRestClient::on_handshake(beast::error_code ec)
 
     beast::get_lowest_layer(*m_stream).expires_never();
     m_connected = true;
+    m_connectedOnce = true;
     NANO_LOG(DEBUG, "[Binance REST] Connected successfully!");
 
     m_timer.cancel();
@@ -194,26 +198,32 @@ void BinanceRestClient::on_read(const Response& response, beast::error_code ec, 
 
 void BinanceRestClient::fail(beast::error_code ec, const char* what)
 {
+    // operation_aborted is the library echoing back our own cancel()/close() call.
+    // The teardown is already in progress — nothing to do.
+    if (ec == net::error::operation_aborted) return;
+    
     NANO_LOG(DEBUG, "[Binance REST] %s: %s", what, ec.message().c_str());
-    // The client was never connected
+    m_connected = false;
+
     // The session is to be terminated only if the clinet was never connected
     // if the session has once started, it should try to reconsile indefinitely
-    if (!m_connected)
+    if (isFatalError(ec) && !m_connectedOnce)
     {
-      NANO_LOG(ERROR,"[Binance REST] Fatal error encountered. Closing connection.");
-      m_timer.cancel();
-      close_connection();
-      while (!m_queue.empty()) {
-        auto const &cb = m_queue.front().callback;
-        cb(json::object{}, ec);
-        m_queue.pop();
-      }
+        NANO_LOG(DEBUG, "[Binance REST] Fatal error encountered. Closing connection.");
+        m_timer.cancel();
+        close_connection();
+        
+        while (!m_queue.empty())
+        {
+            auto const& cb = m_queue.front().callback;
+            cb(json::object{}, ec);
+            m_queue.pop();
+        }
 
-      m_readyCallback(ec);
-      return;
+        m_readyCallback(ec);
+        return;
     }
-
-    m_connected = false;    
+    
     m_resolver  = tcp::resolver(m_strand);
     m_stream    = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(m_strand, m_ctx); 
     m_timer.cancel();
@@ -228,9 +238,26 @@ void BinanceRestClient::fail(beast::error_code ec, const char* what)
     );
 }
 
+void BinanceRestClient::stop()
+{
+    // This is a public method, so can be called from any thread,
+    // so have to make sure that it's called in the strand
+    net::post(m_strand, [me = shared_from_this(), this](){
+        close_connection();
+    });
+}
+
 void BinanceRestClient::close_connection()
 {
     beast::error_code ignore;
+
+    while(!m_queue.empty())
+    {
+        auto const& [_, __, ___, cb] = m_queue.front();
+        cb(json::object{}, net::error::no_data);
+        m_queue.pop();
+    }
+    
     (*m_stream).shutdown(ignore);
 }
 

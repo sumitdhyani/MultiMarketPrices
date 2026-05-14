@@ -211,11 +211,11 @@ void updateLogLevel(const json::object& cfg)
 
 void onConfigUpdate(const std::string& appId,
     const std::optional<ConfigListener>& configListener,
-    const std::optional<ConfigValidator>& configValidator)
+    const ConfigValidator& configValidator)
 {
     NANO_LOG(DEBUG, "Config updated");
     auto cfg_opt = createConfig(appId);
-    if(cfg_opt && configValidator? (*configValidator)(*cfg_opt) : true)
+    if(cfg_opt && configValidator(*cfg_opt))
     {
         std::cout << "New cfg: " << json::serialize(*cfg_opt) << std::endl;
         updateLogLevel(*cfg_opt);
@@ -229,7 +229,7 @@ void onConfigUpdate(const std::string& appId,
 
 std::optional<json::object> init(const std::string& appId,
     const std::optional<ConfigListener>& configListener,
-    const std::optional<ConfigValidator>& configValidator)
+    const ConfigValidator& configValidator)
 {
     auto cfg_opt = createConfig(appId);
     if(cfg_opt)

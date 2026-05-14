@@ -58,6 +58,13 @@ struct BinanceConfigTag : StringEnum<MetaEnum::ConfigTags, BinanceConfigTag>
     static BinanceConfigTag instance{"restApiVersion"}; 
     return instance;
   }
+
+  static BinanceConfigTag const &wsThrottleRatePerSec()
+  {
+    static BinanceConfigTag instance{"wsThrottleRatePerSec"}; 
+    return instance;
+  }
+  
 };
 
 struct BinanceTag : StringEnum<MetaEnum::Tags, BinanceTag>

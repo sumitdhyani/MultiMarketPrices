@@ -1,4 +1,5 @@
 #include "Binance.h"
+#include "Binance/RestApi.h"
 #include "Constants.h"
 #include "MTTools/TaskThrottlers.hpp"
 #include "PlatformComm/PlatformComm.h"
@@ -9,6 +10,7 @@
 #include <boost/json/object.hpp>
 #include <boost/json/serialize.hpp>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <ranges>
 #include <string>
@@ -417,7 +419,8 @@ void launchWebSocketClient(net::io_context& ioc,
     net::strand<net::io_context::executor_type>& strand,
     const std::shared_ptr<BinanceRestClient>& client,
     const json::object& cfg,
-    const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler)
+    const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler,
+    const std::shared_ptr<BinanceRestClient>& restClient)
 {
     const std::string host = cfg.at(*BinanceConfigTag::wsHost()).as_string().c_str();
     const std::string port = std::to_string(cfg.at(*BinanceConfigTag::wsPort()).as_int64());
@@ -438,10 +441,15 @@ void launchWebSocketClient(net::io_context& ioc,
         port,
         path,
         10,
-        [sessHolder, client, &strand, &ioc, &cfg, routing](const beast::error_code& ec){
+        [sessHolder, client, &strand, &ioc, &cfg, routing, restClient](const beast::error_code& ec){
             if (ec)
             { 
-                if (!clientConnectedOnce) ioc.stop();
+                NANO_LOG(ERROR, "Error while initializing ws client, details: %s", ec.message().c_str());
+                if (!clientConnectedOnce)
+                {
+                    restClient->stop();
+                    ioc.stop();
+                }
                 else routing->pubSubMethods.produceUpdate("", ConnectionClosedUpdate(INSTRUMENT_WILD_CARD));
                 return;
             }
@@ -519,7 +527,7 @@ void launchRestClient(net::io_context& ioc,
                     }
 
                     NANO_LOG(ERROR, "Launching WebSocker client");
-                    launchWebSocketClient(ioc, ctx, strand, client, cfg, throttler);
+                    launchWebSocketClient(ioc, ctx, strand, client, cfg, throttler, client);
             });
         },
         10
@@ -552,7 +560,7 @@ int main(int argc, char** argv)
     }
 
     const std::string appId = argv[1];
-    auto const &cfg_opt = Config::init(appId, std::nullopt, std::nullopt);
+    auto const &cfg_opt = Config::init(appId, std::nullopt, validateConfig);
     if (!cfg_opt) {
       return 1;
     }
@@ -561,11 +569,12 @@ int main(int argc, char** argv)
     auto taskScheduler = std::make_shared<Scheduler>();
     auto workerThread = std::make_shared<Worker>();
     auto timer = std::make_shared<Timer>(taskScheduler);
+    const uint64_t wsThrottleRate = cfg.at(*BinanceConfigTag::wsThrottleRatePerSec()).as_int64();
     auto throttler =
     std::make_shared<ULMTTools::ReusableThrottledWorkerThread>(workerThread,
         taskScheduler,
         std::chrono::seconds(1),
-        5);
+        wsThrottleRate);
 
     net::io_context ioc;
     ssl::context ctx{ssl::context::tlsv12_client};

@@ -36,7 +36,7 @@ public:
         const std::string& api_version,
         const std::function<void(const beast::error_code&)>& readyHandler,
         const uint16_t& retryIntervalSec);
-
+    
     // ==================== PUBLIC METHODS ====================
     void ping(const Callback& cb);
     void getServerTime(const Callback& cb);
@@ -53,12 +53,12 @@ public:
     void getTradableInstruments(const Callback& cb);
     
     void run();
+    void stop();
 
 private:
     bool isFatalError(const beast::error_code& ec) {
         return
         ec.category() == net::error::get_ssl_category()
-        || ec == net::error::operation_aborted
         || ec == http::error::bad_alloc
         || ec == http::error::bad_method
         || ec == http::error::bad_version
@@ -117,6 +117,7 @@ private:
     const uint16_t m_retryIntervalSec;
     std::queue<PendingRequest> m_queue;
     bool m_connected;
+    bool m_connectedOnce;
 
     beast::flat_buffer m_buffer;
     http::request<http::string_body> m_request;

@@ -128,7 +128,7 @@ int main(int argc, char* argv[])
     }
     const std::string appId = argv[1];
 
-    auto const& cfg_opt = Config::init(appId, std::nullopt, std::nullopt);
+    auto const& cfg_opt = Config::init(appId, std::nullopt, validateConfig);
     if (!cfg_opt)
     {
         return 1;

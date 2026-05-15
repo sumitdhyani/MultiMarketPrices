@@ -7,6 +7,10 @@ if(NOT CMAKE_BUILD_TYPE )
         set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Per-component versioning — each component calls get_component_version()
+# See cmake/ComponentVersion.cmake for usage instructions.
+include(${CMAKE_SOURCE_DIR}/cmake/ComponentVersion.cmake)
+
 set(CMAKE_CXX_STANDARD 23)
 cmake_minimum_required(VERSION 3.5.0)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}")

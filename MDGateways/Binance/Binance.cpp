@@ -1,6 +1,7 @@
 #include "Binance.h"
 #include "Binance/RestApi.h"
 #include "Constants.h"
+#include "Version.h"
 #include "MTTools/TaskThrottlers.hpp"
 #include "PlatformComm/PlatformComm.h"
 #include <MDGatewayRouterConfig.h>
@@ -554,6 +555,11 @@ void onConfigUpdate(const json::object& cfg)
 
 int main(int argc, char** argv)
 {
+    if (argc >= 2 && std::string(argv[1]) == "--version") {
+        std::cout << APP_VERSION << std::endl;
+        return 0;
+    }
+
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <appId>" << std::endl;
         return 1;

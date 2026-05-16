@@ -144,16 +144,17 @@ int main(int argc, char** argv)
     if (!cfg_opt) {
       return 1;
     }
-    auto cfg = *cfg_opt;
+    auto const& cfg = *cfg_opt;
     const uint16_t minBrokers = cfg.at(*ConfigTag::numMinBrokers()).as_int64();
 
 
     auto scheduler = std::make_shared<ULMTTools::TaskScheduler>();
     auto timer =  std::make_shared<ULMTTools::Timer>(scheduler);
     auto worker = std::make_shared<ULMTTools::WorkerThread>();
-    
+    const std::string syncDataRequestTopic = cfg.at(*ConfigTag::syncDataRequestTopic()).as_string().c_str();
+
     auto initCb =
-    [timer, worker](const Middleware::ProducerFunc& producerFunc,
+    [timer, worker, syncDataRequestTopic](const Middleware::ProducerFunc& producerFunc,
             const Middleware::LowLevelProducerFunc& lowLevelProducerFunc,
             const Middleware::ConsumerFunc& groupConsumerFunc,
             const Middleware::ConsumerFunc& individualConsumerFunc,
@@ -165,7 +166,7 @@ int main(int argc, char** argv)
         ::requestFunc = requestFunc;
         ::respondFunc = respondFunc;
         NANO_LOG(DEBUG, "Initialization callback called, now subscribing to group consumer topic");
-        groupConsumerFunc(*Topic::pubSub_sync_data_requests(), std::nullopt);
+        groupConsumerFunc(syncDataRequestTopic, std::nullopt);
     };
 
     const std::string heartBeatStr = getHeartBeatMsg();
@@ -173,13 +174,14 @@ int main(int argc, char** argv)
 
     const std::string brokers = cfg.at(*ConfigTag::brokers()).as_string().c_str();
     const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
+    const int64_t heartbeatIntervalSec = cfg.at(*ConfigTag::hearbeatInterval()).as_int64();
 
     NANO_LOG(DEBUG, "Initializing middleware");
     Middleware::initializeMiddleWare(appId,
         "SDPMock",
         [appStr]() { return appStr; },
         [heartBeatStr]() { return heartBeatStr; },
-        5,
+        heartbeatIntervalSec,
         timer,
         worker,
         msgCb,
@@ -206,6 +208,7 @@ int main(int argc, char** argv)
                 sendCb);
         },
         std::nullopt,
-        minBrokers
+        minBrokers,
+        cfg.at(*ConfigTag::heartbeatsTopic()).as_string().c_str()
     );
 }

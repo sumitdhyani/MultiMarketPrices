@@ -175,5 +175,6 @@ int main(int argc, char* argv[])
         [](const uint64_t &reqId) { 
             std::cout << "Pong callback received, reqId: " << reqId << std::endl;
         },
-        cfg.at(*ConfigTag::numMinBrokers()).as_int64());
+        cfg.at(*ConfigTag::numMinBrokers()).as_int64(),
+        cfg.at(*ConfigTag::heartbeatsTopic()).as_string().c_str());
 }

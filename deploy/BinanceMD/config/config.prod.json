@@ -13,7 +13,11 @@
         "BinanceMD":
         {
             "in_topic" : "binance_price_subscriptions",
-            "logLevel":"DEBUG"
+            "logLevel":"DEBUG",
+            "heartbeatsTopic":      "heartbeats",
+            "syncDataTopic":        "sync_data",
+            "syncDataRequestTopic": "sync_data_request",
+            "statusTopic":          "gateway_status"
         },
         
         "DataDumper": {},

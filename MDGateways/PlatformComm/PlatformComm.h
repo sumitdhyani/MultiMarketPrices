@@ -32,16 +32,52 @@ using GetPriceSnapshotFunc = std::function<void(const std::string&, const PriceT
 
 static const std::string INSTRUMENT_WILD_CARD = "*";
 
+// Gateway operational status — platform-level states meaningful to all consumers.
+// Gateway-specific nuance is communicated via the free-text `detail` field.
+// NOTE: intentionally scoped to PlatformComm; these states are only valid for
+//       MD gateways.  Process lifecycle (up/down) is handled by app_up/app_down.
+struct GatewayStatus : StringEnum<MetaEnum::GatewayStatusEnum, GatewayStatus>
+{
+    static GatewayStatus const& init()
+    {
+        static GatewayStatus instance{"init"};
+        return instance;
+    }
+    static GatewayStatus const& operational()
+    {
+        static GatewayStatus instance{"operational"};
+        return instance;
+    }
+    static GatewayStatus const& degraded()
+    {
+        static GatewayStatus instance{"degraded"};
+        return instance;
+    }
+    static GatewayStatus const& disconnected()
+    {
+        static GatewayStatus instance{"disconnected"};
+        return instance;
+    }
+};
+
+using PublishStatusFunc = std::function<void(const GatewayStatus&, const std::string&)>;
+using GatewayInitCb    = std::function<void(const PublishStatusFunc&)>;
+
 namespace PlatformComm
 {
 void init(const std::shared_ptr<MDRoutingMethods> &routing,
-          const KeyGenFunc &keyGenFunc,
-          const KeyDisintegrationFunc &keyDisintegrationFunc,
-          const std::string &brokers,
-          const std::shared_ptr<ULMTTools::Timer> timer,
-          const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
-          const std::string &appId, const std::string &appGroup,
-          const std::string &inTopic,
-          const Middleware::ErrCallback &initErrorCb,
-          const uint16_t &minAvailableBrokers);
+    const KeyGenFunc &keyGenFunc,
+    const KeyDisintegrationFunc &keyDisintegrationFunc,
+    const std::string &brokers,
+    const std::shared_ptr<ULMTTools::Timer> timer,
+    const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
+    const std::string &appId, const std::string &appGroup,
+    const std::string &inTopic,
+    const Middleware::ErrCallback &initErrorCb,
+    const uint16_t &minAvailableBrokers,
+    const std::string& heartbeatTopic,
+    const std::string& syncDataTopic,
+    const std::string& syncDataRequestTopic,
+    const std::string& statusTopic,
+    const GatewayInitCb& gatewayInitCb);
 }

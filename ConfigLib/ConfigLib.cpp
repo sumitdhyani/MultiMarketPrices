@@ -1,5 +1,6 @@
 #include <NanoLog.h>
 #include <NanoLogCpp17.h>
+#include <array>
 #include <boost/asio/buffer.hpp>
 #include <boost/json/object.hpp>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <cstring>
 #include <functional>
 #include <atomic>
+#include <vector>
 #include <Constants.h>
 #include <fstream>
 #include <sstream>
@@ -23,11 +25,10 @@
 namespace Config
 {
     std::atomic<bool> stopFlag(false);
-
-
+    
 namespace
 {
-
+    bool initializedOnce = false;
     void watch_file(const std::string& dir,
                     const std::string& filename,
                     const std::function<void()>& listener,
@@ -72,7 +73,6 @@ namespace
                 if (event->len > 0) {
                     if (std::strcmp(filename.c_str(), event->name) == 0) {
                         if (event->mask & (IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE)) {
-                            std::cout << "Detected change in " << filename << std::endl;
                             listener();
                         }
                     }
@@ -142,8 +142,39 @@ json::object flatten(const json::object& config, const std::string& appId)
     return merge(app_obj, group_obj, system_obj);
 }
 
+bool checkMandatoryTagsPresent(const json::object& obj)
+{
+    static std::array<ConfigTag, 11> mandatoryTags{
+        ConfigTag::brokers(),
+        ConfigTag::hearbeatInterval(), 
+        ConfigTag::hearbeatTimeout(),
+        ConfigTag::numMaxBrokers(),
+        ConfigTag::numMinBrokers(),
+        ConfigTag::logLevel(),
+        ConfigTag::registrationsTopic(),
+        ConfigTag::heartbeatsTopic(),
+        ConfigTag::statusTopic(),
+        ConfigTag::syncDataRequestTopic(),
+        ConfigTag::syncDataTopic()};
+
+    for (auto const& tag : mandatoryTags)
+    {
+        if (!obj.contains(*tag))
+        {
+            if (initializedOnce) NANO_LOG(ERROR, "Mandatory tag: %s abscent", (*tag).c_str());
+            else std::cout << "Mandatory tag: "<< *tag << " abscent";
+            return false;
+        }
+
+    }
+
+    return true;
+}
+
 bool validate(const json::object& obj, const std::string& appId)
 {
+    if(!checkMandatoryTagsPresent(obj)) return false;
+    
     if (!obj.contains(*ConfigTag::groups()))
     {
         NANO_LOG(DEBUG, "Groups section absent for app: %s", appId.c_str());
@@ -217,13 +248,13 @@ void onConfigUpdate(const std::string& appId,
     auto cfg_opt = createConfig(appId);
     if(cfg_opt && configValidator(*cfg_opt))
     {
-        std::cout << "New cfg: " << json::serialize(*cfg_opt) << std::endl;
+        NANO_LOG(NOTICE, "New cfg: %s", json::serialize(*cfg_opt).c_str());
         updateLogLevel(*cfg_opt);
         configListener? (*configListener)(*cfg_opt) : void();
     }
-    else
+    else[[unlikely]]
     {
-        std::cout << "Error with new cfg" << std::endl;
+        NANO_LOG(ERROR, "Error with new cfg");
     }
 }
 
@@ -235,6 +266,7 @@ std::optional<json::object> init(const std::string& appId,
     if(cfg_opt)
     {
         std::cout << "New cfg: " << json::serialize(*cfg_opt) << std::endl;
+        initializedOnce = true;
     }
     else
     {

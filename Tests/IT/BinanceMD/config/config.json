@@ -20,7 +20,11 @@
             "wsHost":               "127.0.0.1",
             "wsPort":               18444,
             "wsPath":               "/stream",
-            "wsThrottleRatePerSec": 5
+            "wsThrottleRatePerSec": 5,
+            "heartbeatsTopic":      "heartbeats",
+            "syncDataTopic":        "sync_data",
+            "syncDataRequestTopic": "sync_data_request",
+            "statusTopic":          "gateway_status"
         }
     },
     "apps":

@@ -105,5 +105,6 @@ namespace Middleware
                             const ResponseCallback& responseCallback,
                             const RequestHandlerFunc& requestHandlerFunc,
                             const std::optional<PongCallback>& pongCallback,
-                            const uint16_t minAvailableBrokers);
+                            const uint16_t minAvailableBrokers,
+                            const std::string& heartbeatTopic);
 }

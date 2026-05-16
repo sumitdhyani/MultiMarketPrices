@@ -423,7 +423,8 @@ void initializeMiddleWare(const std::string& appId,
     const ResponseCallback& responseCallback,
     const RequestHandlerFunc& requestHandlerFunc,
     const std::optional<PongCallback>& pongCallback,
-    uint16_t minAvailableBrokers)
+    uint16_t minAvailableBrokers,
+    const std::string& heartbeatTopic)
 {
     // Redirect Kafka library-level logs to NanoLog
     kafka::setGlobalLogger([](int /*level*/, const char* /*filename*/, int /*lineno*/, const char* msg) {
@@ -656,8 +657,8 @@ void initializeMiddleWare(const std::string& appId,
         groupConsumptionLoop.start();
     }).detach();
 
-    const size_t heartbeatTimerId = timer->install([producerFunc, errCallback, appId, heartBeatGenFunc]() {
-        producerFunc(*Topic::heartbeats(),
+    const size_t heartbeatTimerId = timer->install([producerFunc, errCallback, appId, heartBeatGenFunc, heartbeatTopic]() {
+        producerFunc(heartbeatTopic,
                     MessageType::heartBeat(),
                     appId,
                     heartBeatGenFunc(),

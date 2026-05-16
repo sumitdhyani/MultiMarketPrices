@@ -6,7 +6,10 @@
         "hearbeatTimeout":30,
         "numMaxBrokers":11,
         "numMinBrokers":1,
-        "logLevel":"INFO"
+        "logLevel":"INFO",
+        "registrationsTopic":"registrations",
+        "heartbeatsTopic":"heartbeats",
+        "statusTopic":"status"
     },
     "groups":
     {

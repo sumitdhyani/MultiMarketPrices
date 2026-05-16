@@ -21,6 +21,12 @@ namespace json = boost::json;
 std::string appId;
 std::string appGroup;
 std::string inTopic;
+std::string syncDataTopic;
+std::string syncDataRequestTopic;
+std::string statusTopic;
+std::string currentStatus = *GatewayStatus::init();
+std::string currentDetail;
+
 static std::shared_ptr<MDRoutingMethods> gRouting;
 static KeyGenFunc gKeyGenFunc;
 static KeyDisintegrationFunc gKeyDisintegrationFunc;
@@ -36,6 +42,23 @@ void sencCb(const Middleware::RecordMetadata& rm, const Middleware::Error& err)
 {
     if(!err) return;
     NANO_LOG(DEBUG, "Error while sending msg, code %d details: %s", err.value(), err.message().c_str());
+}
+
+std::string buildStatusMsg()
+{
+    return json::serialize(json::object({
+        {*Tags::message_type(), *MessageType::status_update()},
+        {*Tags::appId(),        appId},
+        {*Tags::appGroup(),     appGroup},
+        {*Tags::md_gw_status(),       currentStatus},
+        {*Tags::status_detail(),       currentDetail}
+    }));
+}
+
+void doPublishStatus()
+{
+    if (producerFunc && !statusTopic.empty())
+        producerFunc(statusTopic, MessageType::status_update(), appId, buildStatusMsg(), {}, sencCb);
 }
 
 void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
@@ -67,7 +90,7 @@ void rebalanceCallback(const TopicAssignmentEvent& rebalanceType,
                             {*Tags::group_identifier(), group},
                             {*Tags::destination_topic(), appId}
                         }}),
-                        *Topic::pubSub_sync_data_requests(),
+                        ::syncDataRequestTopic,
                         sencCb
             );
             
@@ -190,7 +213,7 @@ void msgCb(const std::string& topic,
         existingFSM->handleEvent(SubUnsubKey(*routingKey), isSub);
         
         std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
-        producerFunc(*Topic::pubSub_sync_data(),
+        producerFunc(::syncDataTopic,
             MessageType::sync_data_update(),
             appId,
             json::serialize(json::object{
@@ -393,13 +416,23 @@ void PlatformComm::init(
     const std::shared_ptr<ULMTTools::WorkerThread> workerThread,
     const std::string &appId, const std::string &appGroup,
     const std::string &inTopic, const Middleware::ErrCallback &initErrorCb,
-    const uint16_t &minAvailableBrokers) {
+    const uint16_t &minAvailableBrokers,
+    const std::string& heartbeatTopic,
+    const std::string& syncDataTopic,
+    const std::string& syncDataRequestTopic,
+    const std::string& statusTopic,
+    const GatewayInitCb& gatewayInitCb) {
   ::appId = appId;
   ::appGroup = appGroup;
   ::inTopic = inTopic;
   ::gRouting = routing;
   ::gKeyGenFunc = keyGenFunc;
   ::gKeyDisintegrationFunc = keyDisintegrationFunc;
+  ::syncDataTopic = syncDataTopic;
+  ::syncDataRequestTopic = syncDataRequestTopic;
+  ::statusTopic = statusTopic;
+  ::currentStatus = *GatewayStatus::init();
+  ::currentDetail = "";
 
   static const uint64_t kPlatformCommId = 0;
   routing->pubSubMethods.consumeAllUpdate(
@@ -409,7 +442,7 @@ void PlatformComm::init(
             [key, data]() { onPriceDataFromExchange(key, data); });
       });
 
-  auto initCb = [](const Middleware::ProducerFunc &producerFunc,
+  auto initCb = [timer, gatewayInitCb](const Middleware::ProducerFunc &producerFunc,
                    const Middleware::LowLevelProducerFunc &lowLevelProducerFunc,
                    const Middleware::ConsumerFunc &groupConsumerFunc,
                    const Middleware::ConsumerFunc &individualConsumerFunc,
@@ -423,6 +456,17 @@ void PlatformComm::init(
     if (::inTopic != ::appId) {
       groupConsumerFunc(::inTopic, rebalanceCallback);
     }
+
+    gatewayInitCb([](const GatewayStatus& status, const std::string& detail) {
+        ::currentStatus = *status;
+        ::currentDetail = detail;
+        doPublishStatus();
+    });
+
+    // Schedule periodic status re-publish on the heartbeat timer (5-second cadence).
+    // Uses the same timer instance already running heartbeats so no extra thread is needed.
+    static constexpr auto kStatusInterval = std::chrono::seconds(5);
+    timer->install([]() { doPublishStatus(); }, kStatusInterval);
   };
 
   std::string heartBeatStr = getHeartBeatMsg();
@@ -430,19 +474,23 @@ void PlatformComm::init(
 
   NANO_LOG(DEBUG, "Initializing middleware");
   Middleware::initializeMiddleWare(
-      appId, appGroup, [appStr]() { return appStr; },
-      [heartBeatStr]() { return heartBeatStr; }, 5, timer, workerThread, msgCb,
-      initCb, initErrorCb, {{MiddlewareConfig::bootstrap_servers(), brokers}},
-      {{MiddlewareConfig::bootstrap_servers(), brokers}}, responseCb,
-      [](const uint64_t &reqId, const std::string &payLoad) {
-        const json::object obj = json::parse(payLoad).as_object();
-        const std::string msgType =
-            obj.at(*Tags::message_type()).as_string().c_str();
-        if (msgType == *MessageType::price_request()) {
-          handlePriceRequest(reqId, obj);
-        } else if (msgType == *MessageType::instrument_request()) {
-          handleInstrumentListRequest(reqId, obj);
-        }
-      },
-      std::nullopt, minAvailableBrokers);
+    appId, appGroup, [appStr]() { return appStr; },
+    [heartBeatStr]() { return heartBeatStr; }, 5, timer, workerThread, msgCb,
+    initCb, initErrorCb, {{MiddlewareConfig::bootstrap_servers(), brokers}},
+    {{MiddlewareConfig::bootstrap_servers(), brokers}}, responseCb,
+    [](const uint64_t &reqId, const std::string &payLoad) {
+      const json::object obj = json::parse(payLoad).as_object();
+      const std::string msgType =
+          obj.at(*Tags::message_type()).as_string().c_str();
+      if (msgType == *MessageType::price_request()) {
+        handlePriceRequest(reqId, obj);
+      } else if (msgType == *MessageType::instrument_request()) {
+        handleInstrumentListRequest(reqId, obj);
+      }
+    },
+    std::nullopt,
+    minAvailableBrokers,
+    heartbeatTopic);
 }
+
+

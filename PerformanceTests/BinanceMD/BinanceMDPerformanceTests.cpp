@@ -150,7 +150,8 @@ int main(int argc, char** argv)
         [](const uint64_t&, const std::string&, bool isLast){},
         [](const uint64_t&, const std::string&){},
         std::nullopt,
-        cfg.at(*ConfigTag::numMinBrokers()).as_int64());
+        cfg.at(*ConfigTag::numMinBrokers()).as_int64(),
+        cfg.at(*ConfigTag::heartbeatsTopic()).as_string().c_str());
 
     return 0;
 }

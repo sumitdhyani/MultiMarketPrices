@@ -29,28 +29,81 @@ using Timer = ULMTTools::Timer;
 using Timer_SPtr = std::shared_ptr<Timer>;
 SymbolStore symbolStore;
 
+struct ConnectivityState
+{
+ 
+    ConnectivityState() :
+        m_restConnected(false),
+        m_wsConnected(false)
+    {}
+
+    
+    GatewayStatus onRestConnected()
+    {
+        m_restConnected = true;
+        return calcGwStatus();
+    }
+
+    GatewayStatus onRestDisconnected()
+    {
+        m_restConnected = false;
+        return calcGwStatus();
+    }
+
+    GatewayStatus onWSConnected()
+    {
+        m_wsConnected = true;
+        return calcGwStatus();
+    }
+
+    GatewayStatus onWSDisconnected()
+    {
+        m_wsConnected = false;
+        return calcGwStatus();
+    }
+
+    GatewayStatus calcGwStatus()
+    {
+        return (m_restConnected && m_wsConnected)?
+            GatewayStatus::operational():
+        (m_restConnected || m_wsConnected)?
+            GatewayStatus::degraded():
+        GatewayStatus::disconnected();
+    }
+
+private:
+    bool m_restConnected;
+    bool m_wsConnected;
+};
+
 void initMiddleware(const std::shared_ptr<MDRoutingMethods> &routing,
                     const KeyGenFunc &keyGenFunc,
                     const KeyDisintegrationFunc &keyDisintegrationFunc,
                     const std::string &brokers,
                     const Timer_SPtr &timer, const Worker_SPtr &workerThread,
                     const Middleware::ErrCallback &initErrorCb,
+                    const GatewayInitCb& gatewayInitCb,
                     const json::object &cfg) {
   const std::string appId = cfg.at(*ConfigTag::appId()).as_string().c_str();
   const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
   const std::string inTopic = cfg.at(*ConfigTag::in_topic()).as_string().c_str();
 
   PlatformComm::init(routing,
-                    keyGenFunc,
-                    keyDisintegrationFunc,
-                    brokers,
-                    timer,
-                    workerThread,
-                    appId,
-                    appGroup,
-                    inTopic,
-                    initErrorCb,
-                    cfg.at(*ConfigTag::numMinBrokers()).as_int64());
+    keyGenFunc,
+    keyDisintegrationFunc,
+    brokers,
+    timer,
+    workerThread,
+    appId,
+    appGroup,
+    inTopic,
+    initErrorCb,
+    cfg.at(*ConfigTag::numMinBrokers()).as_int64(),
+    cfg.at(*ConfigTag::heartbeatsTopic()).as_string().c_str(),
+    cfg.at(*ConfigTag::syncDataTopic()).as_string().c_str(),
+    cfg.at(*ConfigTag::syncDataRequestTopic()).as_string().c_str(),
+    cfg.at(*ConfigTag::statusTopic()).as_string().c_str(),
+    gatewayInitCb);
 }
 
 bool addKey(json::object& update)
@@ -242,7 +295,9 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
     const Timer_SPtr& timer,
     const Worker_SPtr& workerThread,
     const std::shared_ptr<MDRoutingMethods>& routing,
-    const json::object& cfg)
+    const json::object& cfg,
+    const std::shared_ptr<ConnectivityState>& connectivityState,
+    const std::shared_ptr<PublishStatusFunc>& publishStatusPtr)
 {
     const std::string brokers = cfg.at(*ConfigTag::brokers()).as_string().c_str();
 
@@ -321,6 +376,10 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
         [](const Middleware::Error &error) {
             NANO_LOG(DEBUG, "Error initializing middleware: %s",
                     error.message().c_str());
+        },
+        [connectivityState, publishStatusPtr](const PublishStatusFunc& fn) {
+            *publishStatusPtr = fn;
+            fn(connectivityState->calcGwStatus(), "");
         },
         cfg);
 }
@@ -421,7 +480,9 @@ void launchWebSocketClient(net::io_context& ioc,
     const std::shared_ptr<BinanceRestClient>& client,
     const json::object& cfg,
     const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler,
-    const std::shared_ptr<BinanceRestClient>& restClient)
+    const std::shared_ptr<BinanceRestClient>& restClient,
+    const std::shared_ptr<ConnectivityState>& connectivityState,
+    const std::shared_ptr<PublishStatusFunc>& publishStatusPtr)
 {
     const std::string host = cfg.at(*BinanceConfigTag::wsHost()).as_string().c_str();
     const std::string port = std::to_string(cfg.at(*BinanceConfigTag::wsPort()).as_int64());
@@ -442,7 +503,7 @@ void launchWebSocketClient(net::io_context& ioc,
         port,
         path,
         10,
-        [sessHolder, client, &strand, &ioc, &cfg, routing, restClient](const beast::error_code& ec){
+        [sessHolder, client, &strand, &ioc, &cfg, routing, restClient, connectivityState, publishStatusPtr](const beast::error_code& ec){
             if (ec)
             { 
                 NANO_LOG(ERROR, "Error while initializing ws client, details: %s", ec.message().c_str());
@@ -451,22 +512,33 @@ void launchWebSocketClient(net::io_context& ioc,
                     restClient->stop();
                     ioc.stop();
                 }
-                else routing->pubSubMethods.produceUpdate("", ConnectionClosedUpdate(INSTRUMENT_WILD_CARD));
+                else
+                {
+                    routing->pubSubMethods.produceUpdate("", ConnectionClosedUpdate(INSTRUMENT_WILD_CARD));
+                    (*publishStatusPtr)(connectivityState->onWSDisconnected(), "WebSocket disconnected");
+                }
                 return;
             }
             // It's a reconnection, no need to do anything
-            else if (clientConnectedOnce) return;
+            else if (clientConnectedOnce)
+            {
+                (*publishStatusPtr)(connectivityState->onWSConnected(), "");
+                return;
+            }
 
             clientConnectedOnce = true;
+            (*publishStatusPtr)(connectivityState->onWSConnected(), "");
             auto sess = *sessHolder;
-            std::thread([sess, &strand, client, &cfg, routing](){
+            std::thread([sess, &strand, client, &cfg, routing, connectivityState, publishStatusPtr](){
                 onGatewayConnected(sess,
                     client,
                     strand,
                     std::make_shared<Timer>(std::make_shared<Scheduler>()),
                     std::make_shared<Worker>(),
                     routing,
-                    cfg);
+                    cfg,
+                    connectivityState,
+                    publishStatusPtr);
             }).detach();
         },
         throttler
@@ -481,6 +553,9 @@ void launchRestClient(net::io_context& ioc,
     const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler)
 {
     static bool clientConnectedOnce = false;
+    auto connectivityState = std::make_shared<ConnectivityState>();
+    auto publishStatusPtr  = std::make_shared<PublishStatusFunc>(
+        [](const GatewayStatus&, const std::string&) {});
     const std::string host          = cfg.at(*BinanceConfigTag::restHost()).as_string().c_str();
     const std::string port          = std::to_string(cfg.at(*BinanceConfigTag::restPort()).as_int64());
     const std::string api_version   = cfg.at(*BinanceConfigTag::restApiVersion()).as_string().c_str();
@@ -491,7 +566,7 @@ void launchRestClient(net::io_context& ioc,
         host,
         port,
         api_version,
-        [&ioc, &ctx, &strand, &client, &cfg, throttler]
+        [&ioc, &ctx, &strand, &client, &cfg, throttler, connectivityState, publishStatusPtr]
         (const beast::error_code& ec){
             if (ec)
             {
@@ -499,15 +574,22 @@ void launchRestClient(net::io_context& ioc,
                 {
                     NANO_LOG(DEBUG, "Error in Rest client init phase: %s", ec.message().c_str());
                     ioc.stop();
+                    return;
                 }
+                (*publishStatusPtr)(connectivityState->onRestDisconnected(), "REST disconnected");
                 return;
             }
-            // It's a reconnection, no need to do anything
-            else if (clientConnectedOnce) return;
+            else if (clientConnectedOnce)
+            {
+                (*publishStatusPtr)(connectivityState->onRestConnected(), "");
+                return;
+            }
+
             clientConnectedOnce = true;
+            (*publishStatusPtr)(connectivityState->onRestConnected(), "");
             NANO_LOG(DEBUG, "Fetching instrument list");
             client->getTradableInstruments(
-                [&ioc, &ctx, &strand, &client, &cfg, throttler]
+                [&ioc, &ctx, &strand, &client, &cfg, throttler, connectivityState, publishStatusPtr]
                 (const json::object& obj, const beast::error_code& ec)
                 {
                     if(ec)
@@ -527,8 +609,8 @@ void launchRestClient(net::io_context& ioc,
                         symbolStore[id] = json::serialize(symbol);
                     }
 
-                    NANO_LOG(ERROR, "Launching WebSocker client");
-                    launchWebSocketClient(ioc, ctx, strand, client, cfg, throttler, client);
+                    NANO_LOG(ERROR, "Launching WebSocket client");
+                    launchWebSocketClient(ioc, ctx, strand, client, cfg, throttler, client, connectivityState, publishStatusPtr);
             });
         },
         10

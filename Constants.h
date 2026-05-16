@@ -24,7 +24,8 @@ enum class MetaEnum
     PriceType,
     AppGroup,
     LogLevel,
-    Exchanges
+    Exchanges,
+    GatewayStatusEnum
 };
 
 enum class LoggingLevel
@@ -247,6 +248,12 @@ struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
     static MessageType const& component_enquiry_response()
     { 
         static MessageType instance{"component_enquiry_response"};
+        return instance;
+    }
+
+    static MessageType const& status_update()
+    {
+        static MessageType instance{"status_update"};
         return instance;
     }
 };
@@ -481,6 +488,18 @@ struct Tags : StringEnum<MetaEnum::Tags, Tags>
         static Tags instance{"symbols"};
         return instance;
     }
+
+    static Tags const& md_gw_status()
+    {
+        static Tags instance{"md_gw_status"};
+        return instance;
+    }
+
+    static Tags const& status_detail()
+    {
+        static Tags instance{"status_detail"};
+        return instance;
+    }
 };
 
 struct TagValues : StringEnum<MetaEnum::TagValues, Tags>
@@ -607,6 +626,36 @@ struct ConfigTag : StringEnum<MetaEnum::ConfigTags, ConfigTag>
         static ConfigTag instance{"logLevel"};
         return instance;
     }
+
+    static ConfigTag const& registrationsTopic()
+    { 
+        static ConfigTag instance{"registrationsTopic"};
+        return instance;
+    }
+
+    static ConfigTag const& heartbeatsTopic()
+    { 
+        static ConfigTag instance{"heartbeatsTopic"};
+        return instance;
+    }
+
+    static ConfigTag const& statusTopic()
+    { 
+        static ConfigTag instance{"statusTopic"};
+        return instance;
+    }
+
+    static ConfigTag const& syncDataRequestTopic()
+    { 
+        static ConfigTag instance{"syncDataRequestTopic"};
+        return instance;
+    }
+
+    static ConfigTag const& syncDataTopic()
+    { 
+        static ConfigTag instance{"syncDataTopic"};
+        return instance;
+    }
 };
 
 struct HeaderKey : StringEnum<MetaEnum::HeaderKey, HeaderKey>
@@ -695,41 +744,6 @@ struct MiddlewareConfig : StringEnum<MetaEnum::MiddlewareConfig, MiddlewareConfi
     static MiddlewareConfig const& auto_offset_reset()
     { 
         static MiddlewareConfig instance{"auto.offset.reset"};
-        return instance;
-    }
-};
-
-struct Topic : StringEnum<MetaEnum::Topic, Topic>
-{
-    static Topic const& heartbeats()
-    { 
-        static Topic instance{"heartbeats"};
-        return instance;
-    }
-
-    static Topic const& prices()
-    { 
-        static Topic instance{"prices"};
-        return instance;
-    }
-
-    static Topic const& test_topic()
-    { 
-        static Topic instance{"test_topic"};
-        return instance;
-    }
-
-    // Used to query the subscription state of a group
-    // gropu format: "<gateway_type>:<input_topic>:<partition>"
-    static Topic const& pubSub_sync_data_requests()
-    { 
-        static Topic instance{"pubSub_sync_data_requests"};
-        return instance;
-    }
-
-    static Topic const& pubSub_sync_data()
-    { 
-        static Topic instance{"pubSub_sync_data"};
         return instance;
     }
 };

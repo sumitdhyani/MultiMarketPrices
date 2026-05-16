@@ -15,6 +15,14 @@
 find_package(Git QUIET)
 
 function(get_component_version TAG_PREFIX OUT_VAR)
+    # If an explicit version was passed in via -DCOMPONENT_VERSION=... (e.g. from
+    # a CI docker build --build-arg), honour it and skip git-describe entirely.
+    if(DEFINED COMPONENT_VERSION AND NOT COMPONENT_VERSION STREQUAL "")
+        message(STATUS "[${TAG_PREFIX}] component version (explicit): ${COMPONENT_VERSION}")
+        set(${OUT_VAR} "${COMPONENT_VERSION}" PARENT_SCOPE)
+        return()
+    endif()
+
     set(_version "unversioned")
     if(GIT_FOUND)
         execute_process(

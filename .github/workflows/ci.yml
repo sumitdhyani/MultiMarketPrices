@@ -1,0 +1,104 @@
+# CI workflow for BinanceMD.
+#
+# Triggers:
+#   - Push to master
+#   - Pull requests targeting master
+#   - Called by release.yml via workflow_call (so release reuses the same gate)
+#
+# Strategy:
+#   1. Build BinanceMD using the Docker builder stage — dependencies (rdkafka,
+#      boost.json) are built inside the container and cached via GHA cache.
+#   2. Extract the binary from the builder image.
+#   3. Run the full IT suite via docker-compose.it.yml.  The binary is already
+#      available at the default path inside the bind-mounted workspace, so no
+#      extra BINANCE_MD_BINARY override is needed.
+#
+# Runner: ubuntu-24.04-arm matches the ARM64 production hardware.
+# Switch to ubuntu-latest for x86_64 if you do not need ARM binaries in CI.
+
+name: CI — BinanceMD
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_call:
+    outputs:
+      version:
+        description: "Resolved component version (e.g. v1.2.0)"
+        value: ${{ jobs.build-and-test.outputs.version }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04-arm
+
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so git describe --tags works
+
+      - name: Resolve component version
+        id: version
+        run: |
+          VERSION=$(git describe --tags --match "binance-md/*" --dirty --always 2>/dev/null \
+            | sed 's|^binance-md/||') || VERSION="unversioned"
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "BinanceMD version: ${VERSION}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build the 'builder' stage only — this compiles rdkafka, boost.json and
+      # BinanceMD.  Layer cache is stored in GitHub Actions cache so subsequent
+      # runs are fast (only changed layers are rebuilt).
+      - name: Build BinanceMD (Docker builder stage)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/BinanceMD/Dockerfile
+          target: builder
+          push: false
+          load: true
+          tags: binancemd-builder:ci
+          build-args: VERSION=${{ steps.version.outputs.value }}
+          cache-from: type=gha,scope=binancemd-builder
+          cache-to:   type=gha,mode=max,scope=binancemd-builder
+
+      - name: Extract binary from builder image
+        run: |
+          mkdir -p build/MDGateways/Binance
+          docker create --name binancemd-extract binancemd-builder:ci
+          docker cp binancemd-extract:/src/build/MDGateways/Binance/BinanceMD \
+            build/MDGateways/Binance/BinanceMD
+          docker rm binancemd-extract
+          chmod +x build/MDGateways/Binance/BinanceMD
+          # Sanity-check: print version baked into the binary.
+          ./build/MDGateways/Binance/BinanceMD --version
+
+      - name: Run integration tests
+        run: |
+          docker compose \
+            -f Tests/IT/BinanceMD/docker-compose.it.yml \
+            up --build --exit-code-from it-runner --abort-on-container-exit
+
+      - name: Collect IT logs on failure
+        if: failure()
+        run: |
+          docker compose -f Tests/IT/BinanceMD/docker-compose.it.yml logs
+
+      - name: Tear down compose
+        if: always()
+        run: |
+          docker compose -f Tests/IT/BinanceMD/docker-compose.it.yml down -v
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binancemd-${{ steps.version.outputs.value }}
+          path: build/MDGateways/Binance/BinanceMD
+          retention-days: 7

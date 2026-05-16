@@ -1,0 +1,61 @@
+{
+    "system":
+    {
+        "brokers": "127.0.0.1:9092",
+        "hearbeatInterval":5, 
+        "hearbeatTimeout":30,
+        "numMaxBrokers":11,
+        "numMinBrokers":1,
+        "logLevel":"INFO"
+    },
+    "groups":
+    {
+        "BinanceMD":
+        {
+            "in_topic" : "binance_price_subscriptions",
+            "logLevel":"DEBUG"
+        },
+        
+        "DataDumper": {},
+
+        "BinanceMD_IT":
+        {
+            "out_topic" : "binance_price_subscriptions"
+        },
+
+        "Binance_PT":
+        {
+            "out_topic" : "binance_price_subscriptions"
+        },
+
+        "dummy": {}
+    },
+    "apps":
+    {
+        "BinanceMD_1":
+        {
+            "group":"BinanceMD"
+        },
+
+        "DataDumper_1":
+        {
+            "group":"DataDumper",
+            "targetApp" : "BinanceMD_1"
+        },
+
+        "BinanceMD_IT_1":
+        {
+            "group": "BinanceMD_IT"
+        },
+
+        "SDPMock_1":
+        {
+            "group":"dummy"
+        },
+        
+        "Binance_PT_1":
+        {
+            "group" : "Binance_PT"
+        }
+    }
+}

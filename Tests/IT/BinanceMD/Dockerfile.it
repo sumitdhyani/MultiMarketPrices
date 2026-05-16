@@ -1,0 +1,23 @@
+# Integration-test runner image for BinanceMD.
+#
+# Build context must be the project root so that requirements.txt is reachable:
+#   docker build -f Tests/IT/BinanceMD/Dockerfile.it .
+#
+# The binary and source tree are bind-mounted at runtime (see docker-compose.it.yml).
+
+FROM python:3.12-slim
+
+# confluent-kafka Python wheel requires librdkafka headers at build time.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        librdkafka-dev \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python test dependencies.
+COPY Tests/IT/BinanceMD/requirements.txt /tmp/it-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/it-requirements.txt
+
+WORKDIR /project
+
+CMD ["python", "-m", "behave", "Tests/IT/BinanceMD/features/"]

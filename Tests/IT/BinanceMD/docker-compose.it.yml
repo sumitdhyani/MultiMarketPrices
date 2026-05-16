@@ -1,0 +1,62 @@
+# Integration-test compose file for BinanceMD.
+#
+# Uses network_mode: host for all services so that:
+#   - The C++ binary reads "127.0.0.1:9092" from config/config.json and it just works.
+#   - The simulator binds on 127.0.0.1:18443 / 18444 as BinanceMD expects.
+#
+# Note: network_mode: host works on Linux. It is not supported on macOS/Windows Docker Desktop.
+#
+# Usage (from project root, after building BinanceMD):
+#   docker compose -f Tests/IT/BinanceMD/docker-compose.it.yml up \
+#       --build --exit-code-from it-runner
+#
+# To use a custom binary path:
+#   BINANCE_MD_BINARY=/custom/path/BinanceMD docker compose -f ... up ...
+
+name: binancemd-it
+
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    network_mode: host
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    network_mode: host
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 127.0.0.1:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "127.0.0.1:9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  it-runner:
+    build:
+      context: ../../..
+      dockerfile: Tests/IT/BinanceMD/Dockerfile.it
+    network_mode: host
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      # Mount the whole project so the runner can find the source tree and the
+      # compiled binary.  Read-write so BinanceMD can write its NanoLog files.
+      - ../../../:/project
+    environment:
+      KAFKA_BROKERS: 127.0.0.1:9092
+      # Override if the binary lives elsewhere (e.g. a CI artifact directory).
+      BINANCE_MD_BINARY: ${BINANCE_MD_BINARY:-/project/build/MDGateways/Binance/BinanceMD}
+    working_dir: /project
+    command: python -m behave Tests/IT/BinanceMD/features/

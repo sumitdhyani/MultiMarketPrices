@@ -1,0 +1,5 @@
+# Python dependencies for BinanceMD integration tests
+behave>=1.2.6
+aiohttp>=3.9.0
+cryptography>=41.0.0
+confluent-kafka>=2.3.0

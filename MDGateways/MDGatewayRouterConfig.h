@@ -22,8 +22,8 @@ overload(Ts...) -> overload<Ts...>;
 // --- Price update data types (Exchange → Platform) ---
 struct TradeUpdate  : TypeWrapper<std::string>{};
 struct DepthUpdate : TypeWrapper<std::string> {};
-struct ConnectionClosedUpdate : TypeWrapper<std::string> {};
-using MDUpdateVariant = std::variant<TradeUpdate, DepthUpdate, ConnectionClosedUpdate>;
+struct PriceBlanking {};
+using MDUpdateVariant = std::variant<TradeUpdate, DepthUpdate, PriceBlanking>;
 
 // --- Sub/unsub command types (Platform → Exchange) ---
 // The wrapped json::object carries the full request so KeyGen can extract the routing key

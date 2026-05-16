@@ -313,7 +313,7 @@ void onPriceDataFromExchange(const std::string& key, const MDUpdateVariant& data
       std::visit(
           overload{
               [](auto const &) {},
-              [](const ConnectionClosedUpdate &u) {
+              [](const PriceBlanking&) {
                 for (auto const &[key, destTopics] : symbolToDestTopics) {
                   auto const &[symbol, type, exchange] =
                       gKeyDisintegrationFunc(key);
@@ -342,7 +342,16 @@ overload{
                     producerFunc(destTopic, MessageType::depth_update(), key, *u, {}, sencCb);
                 }
             },
-            [](const ConnectionClosedUpdate&) {}},
+            [it, &key](const PriceBlanking&) {
+                auto const &[symbol, type, exchange] = gKeyDisintegrationFunc(key);
+                for (auto const &destTopic : it->second) {
+                    json::object payloadObject{{*Tags::symbol(), symbol},
+                                               {*Tags::subscription_type(), type},
+                                               {*Tags::exchange(), exchange}};
+                    producerFunc(destTopic, MessageType::price_blanked(), "NULL",
+                                 json::serialize(payloadObject), {}, sencCb);
+                }
+            }},
         data);
 
     }

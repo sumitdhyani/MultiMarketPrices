@@ -514,7 +514,7 @@ void launchWebSocketClient(net::io_context& ioc,
                 }
                 else
                 {
-                    routing->pubSubMethods.produceUpdate("", ConnectionClosedUpdate(INSTRUMENT_WILD_CARD));
+                    routing->pubSubMethods.produceUpdate(INSTRUMENT_WILD_CARD, PriceBlanking{});
                     (*publishStatusPtr)(connectivityState->onWSDisconnected(), "WebSocket disconnected");
                 }
                 return;
@@ -623,16 +623,6 @@ void launchRestClient(net::io_context& ioc,
 bool validateConfig(const json::object& cfg)
 {
     return true;
-}
-
-void onConfigUpdate(const json::object& cfg)
-{
-    const std::string logLevelStr = cfg.at(*ConfigTag::logLevel()).as_string().c_str();
-    if (auto const& level_opt = strToLogLevel(logLevelStr); level_opt)
-    {
-        auto const& level = *level_opt;
-        Logging::setLoggingLevel(level);
-    }
 }
 
 int main(int argc, char** argv)

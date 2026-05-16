@@ -9,7 +9,9 @@
         "logLevel":"INFO",
         "registrationsTopic":"registrations",
         "heartbeatsTopic":"heartbeats",
-        "statusTopic":"status"
+        "statusTopic":"status",
+        "syncDataRequestTopic":"pubSub_sync_data_requests",
+        "syncDataTopic":"pubSub_sync_data"
     },
     "groups":
     {

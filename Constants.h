@@ -656,6 +656,12 @@ struct ConfigTag : StringEnum<MetaEnum::ConfigTags, ConfigTag>
         static ConfigTag instance{"syncDataTopic"};
         return instance;
     }
+
+    static ConfigTag const& middlewareParams()
+    { 
+        static ConfigTag instance{"middleware_params"};
+        return instance;
+    }
 };
 
 struct HeaderKey : StringEnum<MetaEnum::HeaderKey, HeaderKey>

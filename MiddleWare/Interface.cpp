@@ -57,6 +57,7 @@ struct ConsumptionLoop
 
     void start()
     {
+        NANO_LOG(DEBUG, "ConsumptionLoop::start()");
         m_running = true;
         while (m_running)
         {
@@ -72,6 +73,9 @@ struct ConsumptionLoop
             const int64_t &offset = record.offset();
             const std::string &key = record.key().toString();
             const std::string &value = record.value().toString();
+
+            NANO_LOG(DEBUG, "[CONSUME] topic=%s partition=%d offset=%ld",
+                topic.c_str(), partition, (long)offset);
 
             KeyValuePairs headers;
             for (auto const &[key, value] : record.headers()) {
@@ -393,7 +397,9 @@ ConsumerFunc getSubsciptionFunc(ErrCallback errCallback, const std::shared_ptr<K
         try
         {
             if (!rebalanceCallback) {
+                NANO_LOG(NOTICE, "consumer->subscribe(%s) calling", topic.c_str());
                 consumer->subscribe({topic});
+                NANO_LOG(NOTICE, "consumer->subscribe(%s) returned", topic.c_str());
             }
             else
             {
@@ -656,6 +662,7 @@ void initializeMiddleWare(const std::string& appId,
     std::thread([&groupConsumptionLoop]() {
         groupConsumptionLoop.start();
     }).detach();
+    NANO_LOG(NOTICE, "background group consumption thread detached");
 
     const size_t heartbeatTimerId = timer->install([producerFunc, errCallback, appId, heartBeatGenFunc, heartbeatTopic]() {
         producerFunc(heartbeatTopic,
@@ -665,6 +672,7 @@ void initializeMiddleWare(const std::string& appId,
                     {},
                     internalSendCallback);
     }, std::chrono::seconds(heartbeatIntervalSec));
+    NANO_LOG(NOTICE, "heartbeat timer installed");
 
     auto respondFunc =
     [producerFunc, errCallback, pendingRequestBook]
@@ -678,9 +686,12 @@ void initializeMiddleWare(const std::string& appId,
 
     if(auto const& err = individualConsumerFunc(appId, std::nullopt); err)
     {
+        NANO_LOG(ERROR, "individualConsumerFunc failed: code=%d msg=%s",
+            err.value(), err.message().c_str());
         errCallback(err);
         return;
     }
+    NANO_LOG(NOTICE, "individualConsumerFunc succeeded, calling initCallback");
 
     ConsumptionLoop individualConsumptionLoop(*individualConsumer, *kafkaWorker, refinedMsgCallback, errCallback);
     ShutdownFunc shutdownFunc = [&individualConsumptionLoop, timer, heartbeatTimerId]() {
@@ -689,6 +700,7 @@ void initializeMiddleWare(const std::string& appId,
     };
 
     initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc, requestFunc, respondFunc, shutdownFunc);
+    NANO_LOG(NOTICE, "initCallback returned, starting individual consumption loop");
     individualConsumptionLoop.start();
     producer->close();
     // Group consumer will be destrioyed here and killed via RAII

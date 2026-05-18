@@ -186,6 +186,8 @@ void msgCb(const std::string& topic,
     const Middleware::KeyValuePairs& headers,
     const std::string& msg)
 {
+    NANO_LOG(DEBUG, "[msgCb] topic=%s partition=%d offset=%ld msgType=%s key=%s",
+        topic.c_str(), partition, (long)offset, msgType.c_str(), key.c_str());
     if (msgType == *MessageType::subscribe() ||
         msgType == *MessageType::unsubscribe())
     {   
@@ -208,9 +210,11 @@ void msgCb(const std::string& topic,
         }
 
         NANO_LOG(DEBUG, "BookKeeping success for %s:%s", (*routingKey).c_str(), destTopic.c_str());
+        NANO_LOG(DEBUG, "[msgCb] Calling FSM handleEvent key=%s isSub=%d", (*routingKey).c_str(), (int)isSub);
         
         auto& [_, existingFSM] = *it;
         existingFSM->handleEvent(SubUnsubKey(*routingKey), isSub);
+        NANO_LOG(DEBUG, "[msgCb] FSM handleEvent returned for key=%s", (*routingKey).c_str());
         
         std::string group = appGroup + ":" + inTopic + ":" + std::to_string(partition);
         producerFunc(::syncDataTopic,
@@ -279,10 +283,12 @@ void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
     if (auto it = partitionFSMs.find(partition); 
         it != partitionFSMs.end())
     {
+        NANO_LOG(DEBUG, "responseCb: partition=%d isLast=%d", partition, (int)isLast);
         auto& [_, existingFSM] = *it;
         !isLast?
             existingFSM->handleEvent(SubscriptionRecord(jsonObj)) :
             existingFSM->handleEvent(DownloadEnd(jsonObj));
+        NANO_LOG(DEBUG, "responseCb: handleEvent returned for partition=%d", partition);
     }
 }
 
@@ -430,7 +436,8 @@ void PlatformComm::init(
     const std::string& syncDataTopic,
     const std::string& syncDataRequestTopic,
     const std::string& statusTopic,
-    const GatewayInitCb& gatewayInitCb) {
+    const GatewayInitCb& gatewayInitCb,
+    const std::unordered_map<std::string, std::string>& extraKafkaProps) {
   ::appId = appId;
   ::appGroup = appGroup;
   ::inTopic = inTopic;
@@ -458,15 +465,18 @@ void PlatformComm::init(
                    const Middleware::RequestFunc &requestFunc,
                    const Middleware::RespondFunc &respondFunc,
                    const Middleware::ShutdownFunc & /*shutdownFunc*/) {
+    NANO_LOG(ERROR, "Middleware initCb fired — subscribing to in_topic and triggering gatewayInitCb");
     ::producerFunc = producerFunc;
     ::requestFunc = requestFunc;
     ::respondFunc = respondFunc;
 
     if (::inTopic != ::appId) {
-      groupConsumerFunc(::inTopic, rebalanceCallback);
+      if (auto err = groupConsumerFunc(::inTopic, rebalanceCallback); err)
+        NANO_LOG(ERROR, "groupConsumerFunc failed: %s", err.message().c_str());
     }
 
     gatewayInitCb([](const GatewayStatus& status, const std::string& detail) {
+        NANO_LOG(ERROR, "gatewayInitCb publishing status: %s", status->c_str());
         ::currentStatus = *status;
         ::currentDetail = detail;
         doPublishStatus();
@@ -481,12 +491,20 @@ void PlatformComm::init(
   std::string heartBeatStr = getHeartBeatMsg();
   std::string appStr = getDescMsg();
 
+  std::unordered_map<MiddlewareConfig, std::string> producerProps = {{MiddlewareConfig::bootstrap_servers(), brokers}};
+  std::unordered_map<MiddlewareConfig, std::string> consumerProps = {{MiddlewareConfig::bootstrap_servers(), brokers}};
+  for (auto const& [k, v] : extraKafkaProps) {
+    auto key = MiddlewareConfig{k};
+    producerProps[key] = v;
+    consumerProps[key] = v;
+  }
+
   NANO_LOG(DEBUG, "Initializing middleware");
   Middleware::initializeMiddleWare(
     appId, appGroup, [appStr]() { return appStr; },
     [heartBeatStr]() { return heartBeatStr; }, 5, timer, workerThread, msgCb,
-    initCb, initErrorCb, {{MiddlewareConfig::bootstrap_servers(), brokers}},
-    {{MiddlewareConfig::bootstrap_servers(), brokers}}, responseCb,
+    initCb, initErrorCb, producerProps,
+    consumerProps, responseCb,
     [](const uint64_t &reqId, const std::string &payLoad) {
       const json::object obj = json::parse(payLoad).as_object();
       const std::string msgType =

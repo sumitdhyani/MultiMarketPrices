@@ -117,6 +117,20 @@ class ExchangeSimulator(ABC):
             self._ws_runner, "127.0.0.1", self._ws_port, ssl_context=ssl_ctx
         ).start()
 
+    async def reset(self) -> None:
+        """Drop all active connections and clear per-scenario state.
+
+        Called between scenarios so the server keeps running (avoiding
+        stop/restart port-binding races) while the scenario-specific
+        subscription and connection state is wiped clean.
+        """
+        await self.drop_all_ws_connections()
+        self.rest_request_received = False
+        await self._on_reset()
+
+    async def _on_reset(self) -> None:
+        """Subclass hook called by reset() after connections are dropped."""
+
     async def stop(self) -> None:
         await self.drop_all_ws_connections()
         if self._rest_runner:

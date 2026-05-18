@@ -12,7 +12,9 @@
 #include <boost/json/serialize.hpp>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
+#include <unordered_map>
 #include <ranges>
 #include <string>
 #include <vector>
@@ -88,6 +90,13 @@ void initMiddleware(const std::shared_ptr<MDRoutingMethods> &routing,
   const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
   const std::string inTopic = cfg.at(*ConfigTag::in_topic()).as_string().c_str();
 
+  std::unordered_map<std::string, std::string> extraKafkaProps;
+  if (cfg.contains(*ConfigTag::middlewareParams())) {
+    for (auto const& [k, v] : cfg.at(*ConfigTag::middlewareParams()).as_object())
+      if (v.is_string())
+        extraKafkaProps[std::string(k)] = v.as_string().c_str();
+  }
+
   PlatformComm::init(routing,
     keyGenFunc,
     keyDisintegrationFunc,
@@ -103,7 +112,8 @@ void initMiddleware(const std::shared_ptr<MDRoutingMethods> &routing,
     cfg.at(*ConfigTag::syncDataTopic()).as_string().c_str(),
     cfg.at(*ConfigTag::syncDataRequestTopic()).as_string().c_str(),
     cfg.at(*ConfigTag::statusTopic()).as_string().c_str(),
-    gatewayInitCb);
+    gatewayInitCb,
+    extraKafkaProps);
 }
 
 bool addKey(json::object& update)
@@ -344,12 +354,15 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
     // Subscribe to ALL sub/unsub commands from PlatformComm
     routing->pubSubMethods.consumeAllControl(kBinanceId,
         [sess, &strand](const std::string& key, const SubUnsubVariant& cmd) {
+            NANO_LOG(DEBUG, "[CTRL] consumeAllControl fired key=%s", key.c_str());
             std::visit(overload{
                 [&](const SubRequest&) {
+                    NANO_LOG(DEBUG, "[CTRL] calling subscribe for key=%s", key.c_str());
                     subscribe(sess, key);
                 },
                 [&](const UnsubRequest&) {
-                        unsubscribe(sess, key);
+                    NANO_LOG(DEBUG, "[CTRL] calling unsubscribe for key=%s", key.c_str());
+                    unsubscribe(sess, key);
                 }
             }, cmd);
         }
@@ -374,8 +387,9 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
     initMiddleware(
         routing, keyGenFunc, keyDisintegrationFunc, brokers, timer, workerThread,
         [](const Middleware::Error &error) {
-            NANO_LOG(DEBUG, "Error initializing middleware: %s",
-                    error.message().c_str());
+            if (error)
+                NANO_LOG(ERROR, "Error initializing middleware: %s",
+                        error.message().c_str());
         },
         [connectivityState, publishStatusPtr](const PublishStatusFunc& fn) {
             *publishStatusPtr = fn;
@@ -572,7 +586,7 @@ void launchRestClient(net::io_context& ioc,
             {
                 if (!clientConnectedOnce)
                 {
-                    NANO_LOG(DEBUG, "Error in Rest client init phase: %s", ec.message().c_str());
+                    NANO_LOG(ERROR, "Error in Rest client init phase: %s", ec.message().c_str());
                     ioc.stop();
                     return;
                 }
@@ -656,6 +670,12 @@ int main(int argc, char** argv)
 
     net::io_context ioc;
     ssl::context ctx{ssl::context::tlsv12_client};
+    if (const char* ca = std::getenv("SSL_CA_CERT"); ca && *ca) {
+        boost::system::error_code ec;
+        ctx.load_verify_file(ca, ec);
+        if (ec)
+            std::cerr << "Warning: SSL_CA_CERT load failed: " << ec.message() << "\n";
+    }
     net::strand<net::io_context::executor_type> strand{ioc.get_executor()};
 
     launchRestClient(ioc, ctx, strand, cfg, throttler);

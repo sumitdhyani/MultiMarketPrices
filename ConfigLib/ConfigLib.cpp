@@ -173,8 +173,6 @@ bool checkMandatoryTagsPresent(const json::object& obj)
 
 bool validate(const json::object& obj, const std::string& appId)
 {
-    if(!checkMandatoryTagsPresent(obj)) return false;
-    
     if (!obj.contains(*ConfigTag::groups()))
     {
         NANO_LOG(DEBUG, "Groups section absent for app: %s", appId.c_str());
@@ -222,6 +220,7 @@ std::optional<json::object> createConfig(const std::string& appId)
     if (!validate(config, appId)) return std::nullopt;
 
     auto flattenned = std::move(flatten(config, appId));
+    if (!checkMandatoryTagsPresent(flattenned)) return std::nullopt;
     flattenned[*ConfigTag::appId()] = appId;
     return flattenned;
 }

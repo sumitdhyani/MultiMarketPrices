@@ -71,7 +71,8 @@ void onConfigUpdate(const json::object& cfg)
 
 void initErrorCb(const Middleware::Error& err)
 {
-    NANO_LOG(DEBUG, "Error while initializing Middleware: %d, %s", err.value(), err.message().c_str());
+    if (!err) return;
+    NANO_LOG(ERROR, "Middleware initialization error: code=%d msg=%s", err.value(), err.message().c_str());
 }
 
 void responseCb(const uint64_t& reqId, const std::string& msg, bool isLast)
@@ -162,11 +163,12 @@ int main(int argc, char** argv)
             const Middleware::RespondFunc& respondFunc,
             const Middleware::ShutdownFunc& /*shutdownFunc*/)
     {
+        NANO_LOG(NOTICE, "initCb called, subscribing to %s", syncDataRequestTopic.c_str());
         ::producerFunc = producerFunc;
         ::requestFunc = requestFunc;
         ::respondFunc = respondFunc;
-        NANO_LOG(DEBUG, "Initialization callback called, now subscribing to group consumer topic");
         groupConsumerFunc(syncDataRequestTopic, std::nullopt);
+        NANO_LOG(NOTICE, "Subscribed to group topic %s", syncDataRequestTopic.c_str());
     };
 
     const std::string heartBeatStr = getHeartBeatMsg();
@@ -175,6 +177,20 @@ int main(int argc, char** argv)
     const std::string brokers = cfg.at(*ConfigTag::brokers()).as_string().c_str();
     const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
     const int64_t heartbeatIntervalSec = cfg.at(*ConfigTag::hearbeatInterval()).as_int64();
+
+    std::unordered_map<MiddlewareConfig, std::string> extraConsumerProps;
+    if (cfg.contains(*ConfigTag::middlewareParams())) {
+        for (auto const& [k, v] : cfg.at(*ConfigTag::middlewareParams()).as_object())
+            if (v.is_string())
+                extraConsumerProps[MiddlewareConfig{std::string(k)}] = v.as_string().c_str();
+    }
+
+    std::unordered_map<MiddlewareConfig, std::string> consumerProps = {
+        {MiddlewareConfig::bootstrap_servers(), brokers},
+        {MiddlewareConfig::group_id(), *AppGroup::dummy()}
+    };
+    for (auto const& [k, v] : extraConsumerProps)
+        consumerProps[k] = v;
 
     NANO_LOG(DEBUG, "Initializing middleware");
     Middleware::initializeMiddleWare(appId,
@@ -190,10 +206,7 @@ int main(int argc, char** argv)
         {
             {MiddlewareConfig::bootstrap_servers(), brokers},
         },
-        {
-            {MiddlewareConfig::bootstrap_servers(), brokers},
-            {MiddlewareConfig::group_id(), *AppGroup::dummy()}
-        },
+        consumerProps,
         responseCb,
         [](const uint64_t& reqId, const std::string& reqpayload){
             NANO_LOG(DEBUG, "Request received: %s", reqpayload.c_str());
@@ -206,6 +219,7 @@ int main(int argc, char** argv)
                     {*Tags::message_type(), *MessageType::response()}}),
                 true,
                 sendCb);
+            NANO_LOG(DEBUG, "respondFunc called for group=%s", group.c_str());
         },
         std::nullopt,
         minBrokers,

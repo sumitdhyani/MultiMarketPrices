@@ -1,10 +1,11 @@
-"""Manages the BinanceMD subprocess lifecycle for integration tests.
+"""Manages the BinanceMD and SDPMock subprocess lifecycles for integration tests.
 
-The binary is launched with a single positional argument: the appId.
+The binaries are launched with a single positional argument: the appId.
 
 ConfigLib hardcodes the config path as `./config/config.json` relative to the
-process's working directory.  BinanceMDProcess therefore sets cwd to the
-Tests/IT/ directory so that ConfigLib finds `Tests/IT/config/config.json`.
+process's working directory.  Both process managers therefore set cwd to the
+Tests/IT/BinanceMD/ directory so that ConfigLib finds
+`Tests/IT/BinanceMD/config/config.json`.
 
 Usage:
     proc = BinanceMDProcess()
@@ -16,50 +17,57 @@ Usage:
 import os
 import signal
 import subprocess
-from typing import Optional
+from typing import Any, Optional
 
-# Absolute path to Tests/IT/BinanceMD/ — the working directory for BinanceMD so
-# that ConfigLib finds ./config/config.json (= Tests/IT/BinanceMD/config/config.json).
+# Absolute path to Tests/IT/BinanceMD/ — the shared working directory for all
+# binaries so that ConfigLib finds ./config/config.json.
 _IT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Resolve the binary relative to this file's location:
-#   Tests/IT/utils/process_manager.py  →  build/MDGateways/Binance/BinanceMD
-_DEFAULT_BINARY = os.environ.get(
+_DEFAULT_BINANCE_BINARY = os.environ.get(
     "BINANCE_MD_BINARY",
     os.path.normpath(
-        os.path.join(
-            os.path.dirname(__file__),           # Tests/IT/utils/
-            "../../../build/MDGateways/Binance/BinanceMD",
-        )
+        os.path.join(_IT_DIR, "../../../build/MDGateways/Binance/BinanceMD")
+    ),
+)
+
+_DEFAULT_SDPMOCK_BINARY = os.environ.get(
+    "SDPMOCK_BINARY",
+    os.path.normpath(
+        os.path.join(_IT_DIR, "../../../build/SDPMock/SDPMock")
     ),
 )
 
 
-class BinanceMDProcess:
-    """Wraps a BinanceMD subprocess for use in behave steps."""
+class _BaseProcess:
+    """Shared subprocess lifecycle logic."""
 
-    def __init__(
-        self,
-        app_id: str = "BinanceMD_1",
-        binary_path: str = _DEFAULT_BINARY,
-    ) -> None:
-        self._app_id = app_id
+    def __init__(self, binary_path: str, app_id: str) -> None:
         self._binary_path = binary_path
+        self._app_id = app_id
         self._process: Optional[subprocess.Popen] = None
 
-    def start(self) -> None:
-        """Launch BinanceMD with cwd=Tests/IT/ so ConfigLib finds config/config.json."""
+    def start(self, env_extra: Optional[dict] = None, log_file: Optional[str] = None) -> None:
         if self._process and self._process.poll() is None:
-            return  # already running
+            return
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
+        if log_file:
+            log_fd = open(log_file, "w")
+            stdout_dest: Any = log_fd
+            stderr_dest: Any = log_fd
+        else:
+            stdout_dest = subprocess.DEVNULL
+            stderr_dest = subprocess.DEVNULL
         self._process = subprocess.Popen(
             [self._binary_path, self._app_id],
             cwd=_IT_DIR,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=stdout_dest,
+            stderr=stderr_dest,
+            env=env,
         )
 
     def stop(self, timeout_sec: float = 5.0) -> None:
-        """Send SIGTERM and wait; SIGKILL if the process does not exit in time."""
         if self._process is None:
             return
         if self._process.poll() is None:
@@ -73,3 +81,30 @@ class BinanceMDProcess:
 
     def is_running(self) -> bool:
         return self._process is not None and self._process.poll() is None
+
+
+class BinanceMDProcess(_BaseProcess):
+    """Wraps a BinanceMD subprocess for use in behave steps."""
+
+    def __init__(
+        self,
+        app_id: str = "BinanceMD_1",
+        binary_path: str = _DEFAULT_BINANCE_BINARY,
+    ) -> None:
+        super().__init__(binary_path, app_id)
+
+
+class SDPMockProcess(_BaseProcess):
+    """Wraps an SDPMock subprocess for use in behave steps.
+
+    SDPMock must be started before BinanceMD so the sync-data-request
+    consumer is ready by the time BinanceMD's partition rebalance fires.
+    """
+
+    def __init__(
+        self,
+        app_id: str = "SDPMock_1",
+        binary_path: str = _DEFAULT_SDPMOCK_BINARY,
+    ) -> None:
+        super().__init__(binary_path, app_id)
+

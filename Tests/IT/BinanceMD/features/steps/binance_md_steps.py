@@ -36,10 +36,14 @@ BINANCE_IT_TOPIC = os.environ.get("BINANCE_IT_TOPIC", "BinanceMD_IT_1")
 
 @given('BinanceMD is running and connected to the exchange simulator')
 def step_bmd_running(context):
-    """Verified by before_scenario in environment.py — just assert the invariant."""
+    """Verified by before_scenario in environment.py — assert the explicit service contract."""
     assert context.bmd_process.is_running(), "BinanceMD process is not running"
-    assert context.simulator.rest_request_received, (
-        "BinanceMD has not connected to the simulator"
+    assert context.sdpmock_process.is_running(), "SDPMock process is not running"
+    assert context.status_consumer.gateway_operational, (
+        "BinanceMD has not published gateway_status=operational"
+    )
+    assert context.sync_probe.message_received, (
+        "BinanceMD partition FSM has not completed sync-data handshake with SDPMock"
     )
 
 
@@ -65,6 +69,7 @@ def step_subscribe_depth(context, symbol):
         subscription_type="depth",
         destination_topic=BINANCE_IT_TOPIC,
     )
+    print(f"[depth subscribe] sent subscribe for {symbol} to {BINANCE_IN_TOPIC}", flush=True)
     context.last_symbol = symbol
     context.last_sub_type = "depth"
 
@@ -106,15 +111,32 @@ def step_assert_trade_update(context, symbol, timeout):
 @then('Kafka receives at least 1 depth update for "{symbol}" within {timeout:d} seconds')
 def step_assert_depth_update(context, symbol, timeout):
     _poll_until_depth_update(context, timeout_sec=timeout)
+    sim_subs = getattr(context.simulator, "subscribed_streams", set())
     assert context.consumer.has_depth_update(), (
-        f"No depth update for {symbol} received within {timeout}s"
+        f"No depth update for {symbol} received within {timeout}s. "
+        f"Simulator subscribed_streams={sim_subs}"
     )
 
 
 @then('no new trade updates for "{symbol}" arrive on Kafka within {timeout:d} seconds')
 def step_assert_no_trade_update(context, symbol, timeout):
-    # Drain for the full window and assert silence.
-    context.consumer.clear()
+    # Wait for the unsubscribe to propagate all the way to the simulator.
+    # The simulator removes the stream from subscribed_streams once the last
+    # subscriber is gone, so polling here gives us a reliable sync point.
+    stream = symbol.lower() + "@trade"
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if not context.simulator.is_subscribed(stream):
+            break
+        time.sleep(0.1)
+    # Allow any WS frames already in-flight (simulator → BinanceMD → Kafka)
+    # to finish draining before we start the assertion window.
+    time.sleep(0.5)
+    # Seek the Kafka consumer to the current end-of-topic so that any trade
+    # updates published *before* the unsubscribe fully propagated are skipped.
+    # plain clear() only empties the Python list; it does not advance the
+    # Kafka offset, so those messages would still be picked up by drain().
+    context.consumer.seek_to_end()
     context.consumer.drain(duration_sec=timeout)
     assert not context.consumer.has_trade_update(), (
         f"Unexpected trade update for {symbol} received after unsubscribe"
@@ -157,8 +179,14 @@ def _poll_until_trade_update(context, timeout_sec: float) -> None:
 
 def _poll_until_depth_update(context, timeout_sec: float) -> None:
     deadline = time.monotonic() + timeout_sec
+    last_log = time.monotonic()
     while time.monotonic() < deadline:
         context.consumer.poll_once(timeout_sec=0.5)
+        now = time.monotonic()
+        if now - last_log >= 2.0:
+            sim_subs = getattr(context.simulator, "subscribed_streams", set())
+            print(f"[depth poll] elapsed={now-deadline+timeout_sec:.1f}s, subs={sim_subs}, updates={len(context.consumer.depth_updates())}", flush=True)
+            last_log = now
         if context.consumer.has_depth_update():
             return
 

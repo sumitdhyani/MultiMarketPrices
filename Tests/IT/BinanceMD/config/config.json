@@ -6,7 +6,13 @@
         "hearbeatTimeout": 30,
         "numMaxBrokers": 1,
         "numMinBrokers": 1,
-        "logLevel": "DEBUG"
+        "logLevel": "DEBUG",
+        "registrationsTopic": "registrations",
+        "middleware_params": {
+            "session.timeout.ms": "6000",
+            "heartbeat.interval.ms": "2000",
+            "max.poll.interval.ms": "30000"
+        }
     },
     "groups":
     {
@@ -25,6 +31,12 @@
             "syncDataTopic":        "sync_data",
             "syncDataRequestTopic": "sync_data_request",
             "statusTopic":          "gateway_status"
+        },
+        "SDPMock": {
+            "syncDataRequestTopic": "sync_data_request",
+            "heartbeatsTopic":      "heartbeats",
+            "statusTopic":          "gateway_status",
+            "syncDataTopic":        "sync_data"
         }
     },
     "apps":
@@ -32,6 +44,10 @@
         "BinanceMD_1":
         {
             "group": "BinanceMD"
+        },
+        "SDPMock_1":
+        {
+            "group": "SDPMock"
         }
     }
 }

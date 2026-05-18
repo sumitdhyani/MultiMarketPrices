@@ -112,6 +112,7 @@ class BinanceSimulator(ExchangeSimulator):
 
         if method == "SUBSCRIBE":
             for stream in params:
+                print(f"[SIMULATOR TRACE] SUBSCRIBE received for stream={stream!r}", flush=True)
                 self._stream_subscribers.setdefault(stream, set()).add(ws)
                 self.subscribed_streams.add(stream)
                 if stream not in self._update_tasks:
@@ -125,6 +126,8 @@ class BinanceSimulator(ExchangeSimulator):
                 subs = self._stream_subscribers.get(stream)
                 if subs:
                     subs.discard(ws)
+                    if not subs:  # last subscriber left
+                        self.subscribed_streams.discard(stream)
             await ws.send_str(json.dumps({"result": None, "id": msg_id}))
 
     # ── Streaming update loop ────────────────────────────────────────────────
@@ -179,6 +182,14 @@ class BinanceSimulator(ExchangeSimulator):
         return stream in self.subscribed_streams
 
     # ── Lifecycle override ───────────────────────────────────────────────────
+
+    async def _on_reset(self) -> None:
+        """Cancel streaming tasks and clear subscription state."""
+        for task in list(self._update_tasks.values()):
+            task.cancel()
+        self._update_tasks.clear()
+        self._stream_subscribers.clear()
+        self.subscribed_streams.clear()
 
     async def stop(self) -> None:
         for task in list(self._update_tasks.values()):

@@ -113,9 +113,11 @@ IEventProcessor<Revoke>
                 (*key).c_str(), subscribe ? "subscribe" : "unsubscribe");
         
 
+        NANO_LOG(DEBUG, "Operational::process subFunc calling for key=%s", (*key).c_str());
         subscribe?
             m_subFunc(*key):
             m_unsubFunc(*key);
+        NANO_LOG(DEBUG, "Operational::process subFunc returned for key=%s", (*key).c_str());
 
         return SpecialTransition::nullTransition;
     }

@@ -170,11 +170,15 @@ class session : public std::enable_shared_from_this<session>
         m_connectedOnce = true;
         beast::get_lowest_layer(m_ws).expires_never();
         NANO_LOG(DEBUG, "[Binance WS] on_handshake");
-        // Send the stream subscriptions that were live when the connection was live
-        // Also try to cancel them out with pending unsubscriptions
+        // Re-subscribe to all streams that were live before the disconnect.
+        // First, cancel out any stream that has a pending unsubscribe; anything
+        // remaining needs to be re-sent to the server.
         for (auto const& stream : m_liveSubscriptions)
         {
-            checkAndCancel(stream, m_pendingUnsubs);
+            if (!checkAndCancel(stream, m_pendingUnsubs))
+            {
+                m_pendingSubs.insert(stream);
+            }
         }
         
         if (!m_inFlightComand.empty()) send(m_inFlightComand);
@@ -223,6 +227,11 @@ class session : public std::enable_shared_from_this<session>
         // Always close the underlying TCP socket so that async_connect
         // on the next run() call starts with a clean socket.
         beast::get_lowest_layer(m_ws).close();
+
+        // Reset the SSL object so it can perform a new handshake on reconnect.
+        // After a graceful TLS shutdown, SSL_shutdown() marks the SSL* as
+        // shut down and it can't be reused without this reset.
+        SSL_clear(m_ws.next_layer().native_handle());
     }
 
     bool sendPendingSubs()
@@ -236,6 +245,7 @@ class session : public std::enable_shared_from_this<session>
 
         if(!subsToSend.empty())
         {
+            NANO_LOG(DEBUG, "[WS] Sending pending SUBSCRIBE batch: %s", json::serialize(subsToSend).c_str());
             send(json::serialize(json::object{
                 {"method", "SUBSCRIBE"},
                 {"id", ++m_msgNo},
@@ -560,6 +570,7 @@ public:
         };
 
         m_inFlightComand = boost::json::serialize(jsonObj);
+        NANO_LOG(DEBUG, "[WS] Sending depth SUBSCRIBE: stream=%s", stream.c_str());
         send(m_inFlightComand);
     }
 
@@ -600,6 +611,7 @@ public:
 
     void unsubscribeDepthOnStrand(const std::string& symbol)
     {
+        NANO_LOG(DEBUG, "[WS] unsubscribeDepthOnStrand symbol=%s", symbol.c_str());
         auto const& stream = symbol + "@depth5";
         if (!m_liveSubscriptions.contains(stream))
         {
@@ -610,6 +622,7 @@ public:
         m_liveSubscriptions.erase(stream);
         if (m_inFlight || !m_connected)
         {
+            NANO_LOG(DEBUG, "[WS] unsubscribeDepthOnStrand: pending (inFlight=%d,connected=%d)", (int)m_inFlight, (int)m_connected);
             if(!checkAndCancel(stream, m_pendingSubs))
             {
                 m_pendingUnsubs.insert(stream);
@@ -629,6 +642,7 @@ public:
         };
 
         m_inFlightComand = boost::json::serialize(jsonObj);
+        NANO_LOG(DEBUG, "[WS] unsubscribeDepthOnStrand: sending %s", m_inFlightComand.c_str());
         send(m_inFlightComand);
     }
 
@@ -665,7 +679,6 @@ public:
     // Start the asynchronous operation
     void run()
     {
-        // Save these for later
         NANO_LOG(DEBUG, "[Binance WS] run");
         // Look up the domain name
         m_resolver.async_resolve(

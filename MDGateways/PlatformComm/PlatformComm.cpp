@@ -433,11 +433,13 @@ void PlatformComm::init(
     const std::string &inTopic, const Middleware::ErrCallback &initErrorCb,
     const uint16_t &minAvailableBrokers,
     const std::string& heartbeatTopic,
+    const std::string& registrationsTopic,
     const std::string& syncDataTopic,
     const std::string& syncDataRequestTopic,
     const std::string& statusTopic,
     const GatewayInitCb& gatewayInitCb,
-    const std::unordered_map<std::string, std::string>& extraKafkaProps) {
+    const std::unordered_map<std::string, std::string>& extraKafkaProps,
+    const std::function<void()>& exitCb) {
   ::appId = appId;
   ::appGroup = appGroup;
   ::inTopic = inTopic;
@@ -517,7 +519,9 @@ void PlatformComm::init(
     },
     std::nullopt,
     minAvailableBrokers,
-    heartbeatTopic);
+    heartbeatTopic,
+    registrationsTopic,
+    exitCb);
 }
 
 

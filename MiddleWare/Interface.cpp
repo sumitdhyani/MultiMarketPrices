@@ -7,6 +7,7 @@
 #include <string.h>
 #include <thread>
 #include <chrono>
+#include <csignal>
 #include "Interface.h"
 #include "Constants.h"
 #include <Logging.h>
@@ -38,6 +39,13 @@ using TopicPartitions       = kafka::TopicPartitions;
 using PendingRequestBook = std::unordered_map<uint64_t, std::string>;
 using PendingRequestBook_SPtr = std::shared_ptr<PendingRequestBook>;
 
+namespace {
+    std::atomic<bool> g_shutdownRequested{false};
+    void signalHandler(int /*sig*/) {
+        g_shutdownRequested.store(true, std::memory_order_relaxed);
+    }
+}
+
 namespace Middleware
 {
 
@@ -59,7 +67,7 @@ struct ConsumptionLoop
     {
         NANO_LOG(DEBUG, "ConsumptionLoop::start()");
         m_running = true;
-        while (m_running)
+        while (m_running && !g_shutdownRequested.load(std::memory_order_relaxed))
         {
             auto records = m_consumer.poll(std::chrono::milliseconds(100));
             for (const auto &record : records) {
@@ -371,6 +379,35 @@ bool validateInitParams(const std::string& appId,
     return ret;
 }
 
+bool handleLifecycle(
+    const std::string& msgType,
+    const KeyValuePairs& headers,
+    const DescriptionFunc& descriptionFunc,
+    const ProducerFunc& producerFunc,
+    const std::string& appId)
+{
+    if (msgType == *MessageType::component_enquiry())
+    {
+        auto destIt = headers.find(HeaderKey::destTopic());
+        if (destIt != headers.end())
+        {
+            producerFunc(destIt->second,
+                MessageType::component_enquiry_response(),
+                appId,
+                descriptionFunc(),
+                {},
+                internalSendCallback);
+        }
+        return true;
+    }
+    if (msgType == *MessageType::request_stop())
+    {
+        g_shutdownRequested.store(true, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
 ConsumerFunc getSubsciptionFunc(ErrCallback errCallback, const std::shared_ptr<KafkaConsumer>& consumer)
 {
     return 
@@ -430,12 +467,19 @@ void initializeMiddleWare(const std::string& appId,
     const RequestHandlerFunc& requestHandlerFunc,
     const std::optional<PongCallback>& pongCallback,
     uint16_t minAvailableBrokers,
-    const std::string& heartbeatTopic)
+    const std::string& heartbeatTopic,
+    const std::string& registrationsTopic,
+    const std::optional<ExitCallback>& exitCb)
 {
     // Redirect Kafka library-level logs to NanoLog
     kafka::setGlobalLogger([](int /*level*/, const char* /*filename*/, int /*lineno*/, const char* msg) {
         NANO_LOG(DEBUG, "[Kafka] %s", msg);
     });
+
+    // Register signal handlers so SIGINT/SIGTERM trigger a clean shutdown.
+    g_shutdownRequested.store(false, std::memory_order_relaxed);
+    std::signal(SIGINT,  signalHandler);
+    std::signal(SIGTERM, signalHandler);
 
     if (!validateInitParams(appId,
             appGroup,
@@ -609,7 +653,7 @@ void initializeMiddleWare(const std::string& appId,
     auto pendingRequestBook = std::make_shared<PendingRequestBook>();
 
     MsgCallback refinedMsgCallback =
-    [errCallback, responseCallback, requestHandlerFunc, msgCallback, pendingRequestBook, producerFunc, pongCallback]
+    [errCallback, responseCallback, requestHandlerFunc, msgCallback, pendingRequestBook, producerFunc, pongCallback, descriptionFunc, appId]
     (const std::string& topic,
         const int32_t& partition,
         const int64_t& offset,
@@ -618,13 +662,12 @@ void initializeMiddleWare(const std::string& appId,
         const KeyValuePairs& headers,
         const std::string& payload)
     {
-
-        if (!handleResponse(topic, partition, offset, msgType, key, headers, payload, responseCallback, errCallback, pongCallback)
+        if (!handleLifecycle(msgType, headers, descriptionFunc, producerFunc, appId)
+            && !handleResponse(topic, partition, offset, msgType, key, headers, payload, responseCallback, errCallback, pongCallback)
             && !handleRequest(topic, partition, offset, msgType, key, headers, payload, requestHandlerFunc, errCallback, pendingRequestBook, producerFunc))
         {
             msgCallback(topic, partition, offset, msgType, key, headers, payload);
         }
-        // Here we can do some common processing for all messages before passing to user defined callback, e.g. logging, metrics, etc.
     };
 
 
@@ -701,8 +744,22 @@ void initializeMiddleWare(const std::string& appId,
 
     initCallback(producerFunc, lowLevelProducerFunc, groupConsumerFunc, individualConsumerFunc, requestFunc, respondFunc, shutdownFunc);
     NANO_LOG(NOTICE, "initCallback returned, starting individual consumption loop");
+
+    // Notify the system that this component is fully initialised and running.
+    producerFunc(registrationsTopic, MessageType::app_up(), appId, descriptionFunc(), {}, internalSendCallback);
+    NANO_LOG(NOTICE, "app_up sent");
+
     individualConsumptionLoop.start();
-    producer->close();
+
+    // Shutdown path — reached on signal, request_stop, or app-called shutdownFunc.
+    producerFunc(registrationsTopic, MessageType::app_down(), appId, descriptionFunc(), {}, internalSendCallback);
+    NANO_LOG(NOTICE, "app_down sent");
+
+    // exitCb runs after app_down is enqueued but before producer->close(), so the
+    // application can still send final Kafka messages if needed.
+    if (exitCb) (*exitCb)();
+
+    producer->close();  // flush app_down + any exitCb messages
     // Group consumer will be destrioyed here and killed via RAII
 }
 

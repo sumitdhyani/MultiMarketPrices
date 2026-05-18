@@ -223,6 +223,8 @@ int main(int argc, char** argv)
         },
         std::nullopt,
         minBrokers,
-        cfg.at(*ConfigTag::heartbeatsTopic()).as_string().c_str()
+        cfg.at(*ConfigTag::heartbeatsTopic()).as_string().c_str(),
+        cfg.at(*ConfigTag::registrationsTopic()).as_string().c_str(),
+        std::nullopt
     );
 }

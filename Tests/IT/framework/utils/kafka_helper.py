@@ -50,6 +50,18 @@ class KafkaCommandProducer:
     def __init__(self, brokers: str) -> None:
         self._producer = Producer({"bootstrap.servers": brokers})
 
+    def stop(
+        self,
+        app_id: str,
+    ) -> None:
+        self._producer.produce(
+            app_id,
+            key=app_id.encode(),
+            value="{}".encode(),
+            headers=[("message_type", "request_stop".encode())],
+        )
+        self._producer.flush()
+
     def subscribe(
         self,
         in_topic: str,
@@ -58,7 +70,7 @@ class KafkaCommandProducer:
         destination_topic: str,
     ) -> None:
         """Send a subscribe command to BinanceMD."""
-        self._send(in_topic, symbol, subscription_type, destination_topic, is_sub=True)
+        self._sendSubUnsub(in_topic, symbol, subscription_type, destination_topic, is_sub=True)
 
     def unsubscribe(
         self,
@@ -68,9 +80,9 @@ class KafkaCommandProducer:
         destination_topic: str,
     ) -> None:
         """Send an unsubscribe command to BinanceMD."""
-        self._send(in_topic, symbol, subscription_type, destination_topic, is_sub=False)
+        self._sendSubUnsub(in_topic, symbol, subscription_type, destination_topic, is_sub=False)
 
-    def _send(
+    def _sendSubUnsub(
         self,
         topic: str,
         symbol: str,
@@ -256,6 +268,77 @@ class KafkaStatusConsumer:
 
     def close(self) -> None:
         self._consumer.close()
+
+class KafkaLifeCycleConsumer:
+    """Polls the gateway_status topic and flags when an 'operational' status_update
+    is received.
+
+    Message format (produced by PlatformComm::buildStatusMsg):
+      Header: message_type = "app_up" | "app_down"
+      Value:  JSON { "appId": "<appId>",
+                     "appGroup": "<appGroup>"}
+    """
+
+    MSG_TYPE_APP_UP         = "app_up"
+    MSG_TYPE_APP_DOWN       = "app_down"
+
+    def __init__(self, brokers: str, lifecycle_topic: str) -> None:
+        from confluent_kafka import TopicPartition
+        # Use assign() with the current end-offset rather than subscribe().
+        # This sidesteps the rebalance protocol entirely: the partition is
+        # assigned and the fetch position is set atomically before the first
+        # poll(), so no BinanceMD message published after __init__ returns
+        # can ever be missed.
+        admin = AdminClient({"bootstrap.servers": brokers})
+        meta = admin.list_topics(lifecycle_topic, timeout=10)
+        partitions = list(meta.topics[lifecycle_topic].partitions.keys())
+
+        group_id = f"IT_status_{uuid.uuid4().hex[:12]}"
+        self._consumer = Consumer({
+            "bootstrap.servers":  brokers,
+            "group.id":           group_id,
+            "enable.auto.commit": "false",
+        })
+        tps = [TopicPartition(lifecycle_topic, p) for p in partitions]
+        # get_watermark_offsets requires the consumer to have the partition
+        # assigned first when using assign(); use the admin watermarks instead.
+        wm_futures = {}
+        for tp in tps:
+            lo, hi = self._consumer.get_watermark_offsets(
+                TopicPartition(lifecycle_topic, tp.partition), timeout=5.0, cached=False
+            )
+            tp.offset = hi
+        self._consumer.assign(tps)
+        self.app_up: bool = False
+        self.app_down: bool = False
+
+    def warm_up(self, timeout_sec: float = 5.0) -> bool:
+        """No-op: assign() is synchronous — the consumer is ready immediately."""
+        return True
+
+    def poll_once(self, timeout_sec: float = 0.5) -> None:
+        msg = self._consumer.poll(timeout=timeout_sec)
+        if msg is None or msg.error():
+            return
+        headers = dict(msg.headers() or [])
+        msg_type_raw = headers.get("message_type", b"")
+        msg_type = msg_type_raw.decode() if isinstance(msg_type_raw, bytes) else msg_type_raw
+        if msg_type != self.MSG_TYPE_APP_UP:
+            self.app_up = True
+        elif msg_type != self.MSG_TYPE_APP_DOWN:
+            self.app_up = False
+            self.app_down = True
+
+    def close(self) -> None:
+        self._consumer.close()
+    
+    def appUp(self, timeout_sec: float = 0.5):
+        self.poll_once(timeout_sec)
+        return self.app_up
+
+    def appDown(self, timeout_sec: float = 0.5):
+        self.poll_once(timeout_sec)
+        return self.app_down
 
 
 # ── Topic probe (detects the first message on any topic) ──────────────────────

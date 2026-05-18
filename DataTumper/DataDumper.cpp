@@ -176,5 +176,7 @@ int main(int argc, char* argv[])
             std::cout << "Pong callback received, reqId: " << reqId << std::endl;
         },
         cfg.at(*ConfigTag::numMinBrokers()).as_int64(),
-        cfg.at(*ConfigTag::heartbeatsTopic()).as_string().c_str());
+        cfg.at(*ConfigTag::heartbeatsTopic()).as_string().c_str(),
+        cfg.at(*ConfigTag::registrationsTopic()).as_string().c_str(),
+        std::nullopt);
 }

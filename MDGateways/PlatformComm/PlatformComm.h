@@ -76,9 +76,11 @@ void init(const std::shared_ptr<MDRoutingMethods> &routing,
     const Middleware::ErrCallback &initErrorCb,
     const uint16_t &minAvailableBrokers,
     const std::string& heartbeatTopic,
+    const std::string& registrationsTopic,
     const std::string& syncDataTopic,
     const std::string& syncDataRequestTopic,
     const std::string& statusTopic,
     const GatewayInitCb& gatewayInitCb,
-    const std::unordered_map<std::string, std::string>& extraKafkaProps = {});
+    const std::unordered_map<std::string, std::string>& extraKafkaProps,
+    const std::function<void()>& exitCb);
 }

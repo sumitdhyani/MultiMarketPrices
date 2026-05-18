@@ -82,6 +82,8 @@ namespace Middleware
 
     using ShutdownFunc = std::function<void()>;
 
+    using ExitCallback = std::function<void()>;
+
     using InitCallback = std::function<void(const ProducerFunc&,
                                             const LowLevelProducerFunc&,
                                             const ConsumerFunc&,    // To subscribe as group
@@ -106,5 +108,7 @@ namespace Middleware
                             const RequestHandlerFunc& requestHandlerFunc,
                             const std::optional<PongCallback>& pongCallback,
                             const uint16_t minAvailableBrokers,
-                            const std::string& heartbeatTopic);
+                            const std::string& heartbeatTopic,
+                            const std::string& registrationsTopic,
+                            const std::optional<ExitCallback>& exitCb);
 }

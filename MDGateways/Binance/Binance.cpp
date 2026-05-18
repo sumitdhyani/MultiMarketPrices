@@ -85,7 +85,8 @@ void initMiddleware(const std::shared_ptr<MDRoutingMethods> &routing,
                     const Timer_SPtr &timer, const Worker_SPtr &workerThread,
                     const Middleware::ErrCallback &initErrorCb,
                     const GatewayInitCb& gatewayInitCb,
-                    const json::object &cfg) {
+                    const json::object &cfg,
+                    const std::function<void()>& exitCb) {
   const std::string appId = cfg.at(*ConfigTag::appId()).as_string().c_str();
   const std::string appGroup = cfg.at(*ConfigTag::group()).as_string().c_str();
   const std::string inTopic = cfg.at(*ConfigTag::in_topic()).as_string().c_str();
@@ -109,11 +110,13 @@ void initMiddleware(const std::shared_ptr<MDRoutingMethods> &routing,
     initErrorCb,
     cfg.at(*ConfigTag::numMinBrokers()).as_int64(),
     cfg.at(*ConfigTag::heartbeatsTopic()).as_string().c_str(),
+    cfg.at(*ConfigTag::registrationsTopic()).as_string().c_str(),
     cfg.at(*ConfigTag::syncDataTopic()).as_string().c_str(),
     cfg.at(*ConfigTag::syncDataRequestTopic()).as_string().c_str(),
     cfg.at(*ConfigTag::statusTopic()).as_string().c_str(),
     gatewayInitCb,
-    extraKafkaProps);
+    extraKafkaProps,
+    exitCb);
 }
 
 bool addKey(json::object& update)
@@ -307,7 +310,8 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
     const std::shared_ptr<MDRoutingMethods>& routing,
     const json::object& cfg,
     const std::shared_ptr<ConnectivityState>& connectivityState,
-    const std::shared_ptr<PublishStatusFunc>& publishStatusPtr)
+    const std::shared_ptr<PublishStatusFunc>& publishStatusPtr,
+    const std::function<void()>& exitCb)
 {
     const std::string brokers = cfg.at(*ConfigTag::brokers()).as_string().c_str();
 
@@ -395,7 +399,8 @@ void onGatewayConnected(const std::shared_ptr<session>& sess,
             *publishStatusPtr = fn;
             fn(connectivityState->calcGwStatus(), "");
         },
-        cfg);
+        cfg,
+        exitCb);
 }
 
 bool transformDepthForPlatForm(const std::string& symbol, json::object& obj)
@@ -543,7 +548,7 @@ void launchWebSocketClient(net::io_context& ioc,
             clientConnectedOnce = true;
             (*publishStatusPtr)(connectivityState->onWSConnected(), "");
             auto sess = *sessHolder;
-            std::thread([sess, &strand, client, &cfg, routing, connectivityState, publishStatusPtr](){
+            std::thread([sess, restClient, &ioc, &strand, client, &cfg, routing, connectivityState, publishStatusPtr](){
                 onGatewayConnected(sess,
                     client,
                     strand,
@@ -552,7 +557,14 @@ void launchWebSocketClient(net::io_context& ioc,
                     routing,
                     cfg,
                     connectivityState,
-                    publishStatusPtr);
+                    publishStatusPtr,
+                    [sess, restClient, &ioc](){ 
+                        NANO_LOG(NOTICE, "Exit callback, closing rest and ws connections");
+                        sess->stop();
+                        restClient->stop();
+                        ioc.stop();
+                        NANO_LOG(NOTICE, "Exit callback, cleanup complete");
+                    });
             }).detach();
         },
         throttler

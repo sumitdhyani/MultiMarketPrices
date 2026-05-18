@@ -44,6 +44,7 @@ from IT.framework.utils.kafka_helper import (
     KafkaCommandProducer,
     KafkaUpdateConsumer,
     KafkaStatusConsumer,
+    KafkaLifeCycleConsumer,
     KafkaTopicProbe,
     ensure_topic_exists,
 )
@@ -51,20 +52,23 @@ from IT.BinanceMD.process_manager import BinanceMDProcess, SDPMockProcess
 from IT.framework.utils.wait_for import wait_for
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-KAFKA_BROKERS           = os.environ.get("KAFKA_BROKERS",            "127.0.0.1:9092")
-BINANCE_IN_TOPIC        = os.environ.get("BINANCE_IN_TOPIC",         "binance_price_subscriptions")
-BINANCE_IT_TOPIC        = os.environ.get("BINANCE_IT_TOPIC",         "BinanceMD_IT_1")
-GATEWAY_STATUS_TOPIC    = os.environ.get("GATEWAY_STATUS_TOPIC",     "gateway_status")
-SYNC_DATA_REQUEST_TOPIC = os.environ.get("SYNC_DATA_REQUEST_TOPIC",  "sync_data_request")
-REST_PORT               = int(os.environ.get("REST_PORT",            "18443"))
-WS_PORT                 = int(os.environ.get("WS_PORT",              "18444"))
+KAFKA_BROKERS           = os.environ.get("KAFKA_BROKERS",           "127.0.0.1:9092")
+BINANCEMD_APP_ID        = os.environ.get("BINANCEMD_APP_ID",        "BinanceMD_1")
+BINANCE_IN_TOPIC        = os.environ.get("BINANCE_IN_TOPIC",        "binance_price_subscriptions")
+BINANCE_IT_TOPIC        = os.environ.get("BINANCE_IT_TOPIC",        "BinanceMD_IT_1")
+GATEWAY_STATUS_TOPIC    = os.environ.get("GATEWAY_STATUS_TOPIC",    "gateway_status")
+SYNC_DATA_REQUEST_TOPIC = os.environ.get("SYNC_DATA_REQUEST_TOPIC", "sync_data_request")
+REGISTRATIONS_TOPIC     = os.environ.get("REGISTRATIONS_TOPIC",     "registrations")
+REST_PORT               = int(os.environ.get("REST_PORT",           "18443"))
+WS_PORT                 = int(os.environ.get("WS_PORT",             "18444"))
 
 # Readiness timeouts
 OPERATIONAL_TIMEOUT_SEC  = 30   # gateway_status = operational
 FSM_READY_TIMEOUT_SEC    = 15   # sync_data_request seen (partition assigned)
 FSM_SETTLE_SEC           = 0.5  # SDPMock response pipeline settle window
 
-
+APP_DOWN_WAIT_SEC        = 0.5  # time to wait for to get an app_down message, after sending a stop_request messaage
+PROCESS_KILLED_WAIT_SEC  = 2    # time to wait for the process to be down after it has sent the app_down message
 # ── Event-loop thread ─────────────────────────────────────────────────────────
 
 def _run_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -124,10 +128,11 @@ def before_scenario(context, scenario) -> None:
     # 2. Set up Kafka helpers.
     #    Status consumer and sync probe must be created BEFORE BinanceMD starts
     #    so they sit at 'latest' offset and will catch the very first messages.
-    context.producer        = KafkaCommandProducer(KAFKA_BROKERS)
-    context.consumer        = KafkaUpdateConsumer(KAFKA_BROKERS, BINANCE_IT_TOPIC)
-    context.status_consumer = KafkaStatusConsumer(KAFKA_BROKERS, GATEWAY_STATUS_TOPIC)
-    context.sync_probe      = KafkaTopicProbe(KAFKA_BROKERS, SYNC_DATA_REQUEST_TOPIC)
+    context.producer            = KafkaCommandProducer(KAFKA_BROKERS)
+    context.consumer            = KafkaUpdateConsumer(KAFKA_BROKERS, BINANCE_IT_TOPIC)
+    context.status_consumer     = KafkaStatusConsumer(KAFKA_BROKERS, GATEWAY_STATUS_TOPIC)
+    context.lifecycle_consumer  = KafkaLifeCycleConsumer(KAFKA_BROKERS, REGISTRATIONS_TOPIC)
+    context.sync_probe          = KafkaTopicProbe(KAFKA_BROKERS, SYNC_DATA_REQUEST_TOPIC)
 
     # 3. Warm up the monitoring consumers so their partition assignments are live
     #    before any process starts.  Without this, messages published immediately
@@ -144,7 +149,7 @@ def before_scenario(context, scenario) -> None:
     sdp_log = f"/tmp/sdp_{scenario_tag}.log"
     context.sdpmock_process = SDPMockProcess()
     context.sdpmock_process.start(log_file=sdp_log)
-    context.bmd_process = BinanceMDProcess()
+    context.bmd_process = BinanceMDProcess(BINANCEMD_APP_ID)
     context.bmd_process.start(
         env_extra={"SSL_CA_CERT": context.certfile},
         log_file=bmd_log,
@@ -193,7 +198,10 @@ def before_scenario(context, scenario) -> None:
 
 def after_scenario(context, scenario) -> None:
     if hasattr(context, "bmd_process"):
-        context.bmd_process.stop()
+        context.producer.stop(BINANCEMD_APP_ID)
+        assert context.lifecycle_consumer.appDown(APP_DOWN_WAIT_SEC), f"app_down message not received after sending stop request and waiting for{APP_DOWN_WAIT_SEC} sec"
+        time.sleep(PROCESS_KILLED_WAIT_SEC)
+        assert not context.bmd_process.is_running(), f"BinanceMD not down after {PROCESS_KILLED_WAIT_SEC} sec after sending app_down message" 
     if hasattr(context, "sdpmock_process"):
         context.sdpmock_process.stop()
     for attr in ("producer", "consumer", "status_consumer", "sync_probe"):
@@ -206,7 +214,6 @@ def after_scenario(context, scenario) -> None:
 def _poll_status(context) -> bool:
     context.status_consumer.poll_once(timeout_sec=0.1)
     return context.status_consumer.gateway_operational
-
 
 def _poll_sync_probe(context) -> bool:
     context.sync_probe.poll_once(timeout_sec=0.1)

@@ -88,7 +88,7 @@ class BinanceMDProcess(_BaseProcess):
 
     def __init__(
         self,
-        app_id: str = "BinanceMD_1",
+        app_id: str,
         binary_path: str = _DEFAULT_BINANCE_BINARY,
     ) -> None:
         super().__init__(binary_path, app_id)

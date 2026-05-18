@@ -209,6 +209,12 @@ struct MessageType : StringEnum<MetaEnum::MessageType, MessageType>
         return instance;
     }
 
+    static MessageType const& request_stop()
+    { 
+        static MessageType instance{"request_stop"};
+        return instance;
+    }
+
     static MessageType const& component_subscription_update()
     { 
         static MessageType instance{"component_subscription_update"};

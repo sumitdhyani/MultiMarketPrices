@@ -1,9 +1,9 @@
-"""Manages the BinanceMD and SDPMock subprocess lifecycles for integration tests.
+"""Manages the BinanceMD subprocess lifecycle for integration tests.
 
-The binaries are launched with a single positional argument: the appId.
+The binary is launched with a single positional argument: the appId.
 
 ConfigLib hardcodes the config path as `./config/config.json` relative to the
-process's working directory.  Both process managers therefore set cwd to the
+process's working directory.  The process manager therefore sets cwd to the
 Tests/IT/BinanceMD/ directory so that ConfigLib finds
 `Tests/IT/BinanceMD/config/config.json`.
 
@@ -27,13 +27,6 @@ _DEFAULT_BINANCE_BINARY = os.environ.get(
     "BINANCE_MD_BINARY",
     os.path.normpath(
         os.path.join(_IT_DIR, "../../../build/MDGateways/Binance/BinanceMD")
-    ),
-)
-
-_DEFAULT_SDPMOCK_BINARY = os.environ.get(
-    "SDPMOCK_BINARY",
-    os.path.normpath(
-        os.path.join(_IT_DIR, "../../../build/SDPMock/SDPMock")
     ),
 )
 
@@ -92,19 +85,3 @@ class BinanceMDProcess(_BaseProcess):
         binary_path: str = _DEFAULT_BINANCE_BINARY,
     ) -> None:
         super().__init__(binary_path, app_id)
-
-
-class SDPMockProcess(_BaseProcess):
-    """Wraps an SDPMock subprocess for use in behave steps.
-
-    SDPMock must be started before BinanceMD so the sync-data-request
-    consumer is ready by the time BinanceMD's partition rebalance fires.
-    """
-
-    def __init__(
-        self,
-        app_id: str = "SDPMock_1",
-        binary_path: str = _DEFAULT_SDPMOCK_BINARY,
-    ) -> None:
-        super().__init__(binary_path, app_id)
-

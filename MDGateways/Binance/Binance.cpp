@@ -11,6 +11,7 @@
 #include <boost/json/object.hpp>
 #include <boost/json/serialize.hpp>
 #include <chrono>
+#include <thread>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -501,7 +502,8 @@ void launchWebSocketClient(net::io_context& ioc,
     const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler,
     const std::shared_ptr<BinanceRestClient>& restClient,
     const std::shared_ptr<ConnectivityState>& connectivityState,
-    const std::shared_ptr<PublishStatusFunc>& publishStatusPtr)
+    const std::shared_ptr<PublishStatusFunc>& publishStatusPtr,
+    std::jthread& workerThread)
 {
     const std::string host = cfg.at(*BinanceConfigTag::wsHost()).as_string().c_str();
     const std::string port = std::to_string(cfg.at(*BinanceConfigTag::wsPort()).as_int64());
@@ -522,7 +524,7 @@ void launchWebSocketClient(net::io_context& ioc,
         port,
         path,
         10,
-        [sessHolder, client, &strand, &ioc, &cfg, routing, restClient, connectivityState, publishStatusPtr](const beast::error_code& ec){
+        [sessHolder, client, &strand, &ioc, &cfg, routing, restClient, connectivityState, publishStatusPtr, &workerThread](const beast::error_code& ec){
             if (ec)
             { 
                 NANO_LOG(ERROR, "Error while initializing ws client, details: %s", ec.message().c_str());
@@ -548,7 +550,7 @@ void launchWebSocketClient(net::io_context& ioc,
             clientConnectedOnce = true;
             (*publishStatusPtr)(connectivityState->onWSConnected(), "");
             auto sess = *sessHolder;
-            std::thread([sess, restClient, &ioc, &strand, client, &cfg, routing, connectivityState, publishStatusPtr](){
+            workerThread = std::jthread([sess, restClient, &ioc, &strand, client, &cfg, routing, connectivityState, publishStatusPtr](){
                 onGatewayConnected(sess,
                     client,
                     strand,
@@ -559,13 +561,13 @@ void launchWebSocketClient(net::io_context& ioc,
                     connectivityState,
                     publishStatusPtr,
                     [sess, restClient, &ioc](){ 
-                        NANO_LOG(NOTICE, "Exit callback, closing rest and ws connections");
-                        sess->stop();
+                        NANO_LOG(NOTICE, "Exit callback: stopping io_context");
+                        ioc.stop();          // unblocks ioc.run(); no more async ops after this
+                        sess->stop();        // safe: async_read abandoned by ioc.stop()
                         restClient->stop();
-                        ioc.stop();
-                        NANO_LOG(NOTICE, "Exit callback, cleanup complete");
+                        NANO_LOG(NOTICE, "Exit callback: done");
                     });
-            }).detach();
+            });
         },
         throttler
     );
@@ -576,7 +578,8 @@ void launchRestClient(net::io_context& ioc,
     ssl::context& ctx,
     net::strand<net::io_context::executor_type>& strand,
     const json::object& cfg,
-    const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler)
+    const std::shared_ptr<ULMTTools::ReusableThrottledWorkerThread>& throttler,
+    std::jthread& workerThread)
 {
     static bool clientConnectedOnce = false;
     auto connectivityState = std::make_shared<ConnectivityState>();
@@ -592,7 +595,7 @@ void launchRestClient(net::io_context& ioc,
         host,
         port,
         api_version,
-        [&ioc, &ctx, &strand, &client, &cfg, throttler, connectivityState, publishStatusPtr]
+        [&ioc, &ctx, &strand, &client, &cfg, throttler, connectivityState, publishStatusPtr, &workerThread]
         (const beast::error_code& ec){
             if (ec)
             {
@@ -615,7 +618,7 @@ void launchRestClient(net::io_context& ioc,
             (*publishStatusPtr)(connectivityState->onRestConnected(), "");
             NANO_LOG(DEBUG, "Fetching instrument list");
             client->getTradableInstruments(
-                [&ioc, &ctx, &strand, &client, &cfg, throttler, connectivityState, publishStatusPtr]
+                [&ioc, &ctx, &strand, &client, &cfg, throttler, connectivityState, publishStatusPtr, &workerThread]
                 (const json::object& obj, const beast::error_code& ec)
                 {
                     if(ec)
@@ -636,7 +639,7 @@ void launchRestClient(net::io_context& ioc,
                     }
 
                     NANO_LOG(ERROR, "Launching WebSocket client");
-                    launchWebSocketClient(ioc, ctx, strand, client, cfg, throttler, client, connectivityState, publishStatusPtr);
+                    launchWebSocketClient(ioc, ctx, strand, client, cfg, throttler, client, connectivityState, publishStatusPtr, workerThread);
             });
         },
         10
@@ -690,7 +693,9 @@ int main(int argc, char** argv)
     }
     net::strand<net::io_context::executor_type> strand{ioc.get_executor()};
 
-    launchRestClient(ioc, ctx, strand, cfg, throttler);
+    std::jthread middlewareThread;  // default-constructed; assigned once WS connects, auto-joins on scope exit
+    launchRestClient(ioc, ctx, strand, cfg, throttler, middlewareThread);
+    // ioc.run() has returned; workerThread auto-joins here when it goes out of scope
 
     return 0;
 }

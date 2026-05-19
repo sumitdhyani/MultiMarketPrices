@@ -266,6 +266,10 @@ class KafkaStatusConsumer:
         if payload.get(self.STATUS_FIELD) == self.OPERATIONAL:
             self.gateway_operational = True
 
+    def gwyOperational(self, timeout_sec: float) -> bool:
+        self.poll_once(timeout_sec)
+        return self.gateway_operational
+
     def close(self) -> None:
         self._consumer.close()
 
@@ -323,21 +327,36 @@ class KafkaLifeCycleConsumer:
         headers = dict(msg.headers() or [])
         msg_type_raw = headers.get("message_type", b"")
         msg_type = msg_type_raw.decode() if isinstance(msg_type_raw, bytes) else msg_type_raw
-        if msg_type != self.MSG_TYPE_APP_UP:
+        if msg_type == self.MSG_TYPE_APP_UP:
             self.app_up = True
-        elif msg_type != self.MSG_TYPE_APP_DOWN:
+            self.app_down = False
+        elif msg_type == self.MSG_TYPE_APP_DOWN:
             self.app_up = False
             self.app_down = True
 
     def close(self) -> None:
         self._consumer.close()
     
-    def appUp(self, timeout_sec: float = 0.5):
-        self.poll_once(timeout_sec)
+    def appUp(self, timeout_sec: float = 0.5) -> bool:
+        """Poll until app_up is seen or timeout expires, draining intervening messages."""
+        import time
+        deadline = time.time() + timeout_sec
+        while not self.app_up:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            self.poll_once(min(0.2, remaining))
         return self.app_up
 
-    def appDown(self, timeout_sec: float = 0.5):
-        self.poll_once(timeout_sec)
+    def appDown(self, timeout_sec: float = 0.5) -> bool:
+        """Poll until app_down is seen or timeout expires, draining intervening messages."""
+        import time
+        deadline = time.time() + timeout_sec
+        while not self.app_down:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            self.poll_once(min(0.2, remaining))
         return self.app_down
 
 
@@ -349,9 +368,9 @@ class KafkaTopicProbe:
 
     Used to detect that BinanceMD has published to sync_data_request, which
     confirms the Kafka partition has been assigned and the per-partition FSM
-    has sent its sync-data download request to SDPMock.
-    After the probe sees this message, SDPMock will have responded (in
-    milliseconds) and the FSM will be operational.
+    has sent its sync-data download request to SDPSimulator.
+    After the probe sees this message, SDPSimulator will have responded and
+    the FSM will be operational.
     """
 
     def __init__(self, brokers: str, topic: str) -> None:
@@ -384,6 +403,10 @@ class KafkaTopicProbe:
         if msg is None or msg.error():
             return
         self.message_received = True
+
+    def messageReceived(self, timeout_sec: float) -> bool:
+        self.poll_once(timeout_sec)
+        return self.message_received
 
     def close(self) -> None:
         self._consumer.close()

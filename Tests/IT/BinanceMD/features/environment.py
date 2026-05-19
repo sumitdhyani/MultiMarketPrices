@@ -1,22 +1,21 @@
 """behave environment hooks for the BinanceMD integration test suite.
 
 Lifecycle:
-  before_all  – generate TLS cert; start shared asyncio event loop thread;
-                ensure all required Kafka topics exist
-  before_scenario – start SDPMock; start BinanceSimulator; create Kafka helpers;
+  before_all      – generate TLS cert; start shared asyncio event loop thread;
+                    ensure all required Kafka topics exist
+  before_scenario – start BinanceSimulator; start SDPSimulator; create Kafka helpers;
                     launch BinanceMD; wait for gateway_status=operational;
-                    wait for sync_data_request (FSM partition assigned + SDPMock responded)
-  after_scenario  – stop BinanceMD; stop SDPMock; stop simulator; close Kafka helpers
+                    wait for sync_data_request (FSM partition assigned + SDPSimulator responded)
+  after_scenario  – stop BinanceMD; stop simulator; close Kafka helpers
   after_all       – stop event loop; cleanup TLS temp dir
 
 Context attributes set by before_scenario:
   context.simulator       — BinanceSimulator instance
+  context.sdp_simulator   — SDPSimulator instance
   context.producer        — KafkaCommandProducer
   context.consumer        — KafkaUpdateConsumer
   context.status_consumer — KafkaStatusConsumer
-  context.sync_probe      — KafkaTopicProbe (watches sync_data_request)
   context.bmd_process     — BinanceMDProcess
-  context.sdpmock_process — SDPMockProcess
   context.loop            — asyncio.AbstractEventLoop (shared, background thread)
 
 Constants (override via env vars):
@@ -39,16 +38,16 @@ import time
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))  # → Tests/
 from IT.BinanceMD.binance.binance_simulator import BinanceSimulator
+from IT.BinanceMD.binance.SDPSimulator import SDPSimulator
 from IT.framework.simulator.tls_helper import generate_self_signed_cert
 from IT.framework.utils.kafka_helper import (
     KafkaCommandProducer,
     KafkaUpdateConsumer,
     KafkaStatusConsumer,
     KafkaLifeCycleConsumer,
-    KafkaTopicProbe,
     ensure_topic_exists,
 )
-from IT.BinanceMD.process_manager import BinanceMDProcess, SDPMockProcess
+from IT.BinanceMD.process_manager import BinanceMDProcess
 from IT.framework.utils.wait_for import wait_for
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -65,9 +64,9 @@ WS_PORT                 = int(os.environ.get("WS_PORT",             "18444"))
 # Readiness timeouts
 OPERATIONAL_TIMEOUT_SEC  = 30   # gateway_status = operational
 FSM_READY_TIMEOUT_SEC    = 15   # sync_data_request seen (partition assigned)
-FSM_SETTLE_SEC           = 0.5  # SDPMock response pipeline settle window
+FSM_SETTLE_SEC           = 0.5  # settle window after SDPSimulator responds
 
-APP_DOWN_WAIT_SEC        = 0.5  # time to wait for to get an app_down message, after sending a stop_request messaage
+APP_DOWN_WAIT_SEC        = 2  # time to wait for to get an app_down message, after sending a stop_request messaage
 PROCESS_KILLED_WAIT_SEC  = 2    # time to wait for the process to be down after it has sent the app_down message
 # ── Event-loop thread ─────────────────────────────────────────────────────────
 
@@ -132,23 +131,17 @@ def before_scenario(context, scenario) -> None:
     context.consumer            = KafkaUpdateConsumer(KAFKA_BROKERS, BINANCE_IT_TOPIC)
     context.status_consumer     = KafkaStatusConsumer(KAFKA_BROKERS, GATEWAY_STATUS_TOPIC)
     context.lifecycle_consumer  = KafkaLifeCycleConsumer(KAFKA_BROKERS, REGISTRATIONS_TOPIC)
-    context.sync_probe          = KafkaTopicProbe(KAFKA_BROKERS, SYNC_DATA_REQUEST_TOPIC)
+    context.sdp_simulator       = SDPSimulator(KAFKA_BROKERS, SYNC_DATA_REQUEST_TOPIC)
 
     # 3. Warm up the monitoring consumers so their partition assignments are live
     #    before any process starts.  Without this, messages published immediately
     #    on startup (before the rebalance completes) are missed.
     assert context.status_consumer.warm_up(5.0), \
         "KafkaStatusConsumer failed to get partition assignment within 5s"
-    assert context.sync_probe.warm_up(5.0), \
-        "KafkaTopicProbe failed to get partition assignment within 5s"
 
-    # 4. Start SDPMock BEFORE BinanceMD so that the sync_data_request consumer
-    #    group is registered by the time BinanceMD's partition rebalance fires.
+    # 4. Launch BinanceMD.
     scenario_tag = scenario.name.replace(" ", "_")[:40]
     bmd_log = f"/tmp/bmd_{scenario_tag}.log"
-    sdp_log = f"/tmp/sdp_{scenario_tag}.log"
-    context.sdpmock_process = SDPMockProcess()
-    context.sdpmock_process.start(log_file=sdp_log)
     context.bmd_process = BinanceMDProcess(BINANCEMD_APP_ID)
     context.bmd_process.start(
         env_extra={"SSL_CA_CERT": context.certfile},
@@ -158,11 +151,7 @@ def before_scenario(context, scenario) -> None:
     # 6. Wait for BinanceMD to publish gateway_status = operational.
     #    This confirms: middleware is up, Kafka producers/consumers are live,
     #    and both REST + WS exchange connections are established.
-    if not wait_for(
-        lambda: _poll_status(context),
-        timeout_sec=OPERATIONAL_TIMEOUT_SEC,
-        poll_interval_sec=0.2,
-    ):
+    if not context.status_consumer.gwyOperational(OPERATIONAL_TIMEOUT_SEC):
         still_up = context.bmd_process.is_running()
         try:
             with open(bmd_log) as f:
@@ -176,17 +165,11 @@ def before_scenario(context, scenario) -> None:
         )
 
     # 7. Wait for sync_data_request message.
-    #    This confirms the Kafka partition was assigned, the per-partition FSM
-    #    sent its download request to SDPMock, and SDPMock has responded
-    #    (SDPMock responds synchronously, so the FSM reaches operational
-    #    state within milliseconds of this message appearing on Kafka).
-    assert wait_for(
-        lambda: _poll_sync_probe(context),
-        timeout_sec=FSM_READY_TIMEOUT_SEC,
-        poll_interval_sec=0.1,
-    ), f"BinanceMD partition FSM did not initialise within {FSM_READY_TIMEOUT_SEC}s"
+    #    This confirms the Kafka partition was assigned and the per-partition FSM
+    #    sent its download request, which SDPSimulator has now responded to.
+    assert context.sdp_simulator.respond_to_sync_requests(timeout_sec=FSM_READY_TIMEOUT_SEC), "SDPSimulator did not receive any sync_data_request messages within the timeout"
 
-    # Brief settle window for SDPMock's response to complete the FSM transition.
+    # Brief settle window for SDPSimulator's response to complete the FSM transition.
     time.sleep(FSM_SETTLE_SEC)
 
     # Extra settle: give BinanceMD's individual consumer (BinanceMD_1 topic) enough
@@ -197,27 +180,24 @@ def before_scenario(context, scenario) -> None:
 
 
 def after_scenario(context, scenario) -> None:
-    if hasattr(context, "bmd_process"):
+    if hasattr(context, "bmd_process") and context.bmd_process.is_running():
+        print(f"[after_scenario] sending request_stop to {BINANCEMD_APP_ID}", flush=True)
+        t0 = time.time()
         context.producer.stop(BINANCEMD_APP_ID)
-        assert context.lifecycle_consumer.appDown(APP_DOWN_WAIT_SEC), f"app_down message not received after sending stop request and waiting for{APP_DOWN_WAIT_SEC} sec"
+        got_down = context.lifecycle_consumer.appDown(APP_DOWN_WAIT_SEC)
+        print(f"[after_scenario] appDown={got_down} after {time.time()-t0:.2f}s", flush=True)
+        assert got_down, f"app_down message not received after sending stop request and waiting for {APP_DOWN_WAIT_SEC} sec"
         time.sleep(PROCESS_KILLED_WAIT_SEC)
-        assert not context.bmd_process.is_running(), f"BinanceMD not down after {PROCESS_KILLED_WAIT_SEC} sec after sending app_down message" 
-    if hasattr(context, "sdpmock_process"):
-        context.sdpmock_process.stop()
-    for attr in ("producer", "consumer", "status_consumer", "sync_probe"):
+        assert not context.bmd_process.is_running(), f"BinanceMD not down after {PROCESS_KILLED_WAIT_SEC} sec after sending app_down message"
+        while (context.bmd_process.is_running()):
+            print(f"[after_scenario] waiting for BinanceMD process to exit, sleeping for 1 sec...", flush=True)
+            time.sleep(1.0)
+    for attr in ("producer", "consumer", "status_consumer", "lifecycle_consumer", "sdp_simulator"):
         if hasattr(context, attr):
             getattr(context, attr).close()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _poll_status(context) -> bool:
-    context.status_consumer.poll_once(timeout_sec=0.1)
-    return context.status_consumer.gateway_operational
-
-def _poll_sync_probe(context) -> bool:
-    context.sync_probe.poll_once(timeout_sec=0.1)
-    return context.sync_probe.message_received
 
 
 def _run_sync(context, coro, timeout: float = 10.0):

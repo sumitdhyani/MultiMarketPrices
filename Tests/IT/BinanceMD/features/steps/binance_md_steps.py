@@ -38,12 +38,9 @@ BINANCE_IT_TOPIC = os.environ.get("BINANCE_IT_TOPIC", "BinanceMD_IT_1")
 def step_bmd_running(context):
     """Verified by before_scenario in environment.py — assert the explicit service contract."""
     assert context.bmd_process.is_running(), "BinanceMD process is not running"
-    assert context.sdpmock_process.is_running(), "SDPMock process is not running"
-    assert context.status_consumer.gateway_operational, (
+    assert context.sdp_simulator is not None, "SDPSimulator not initialized"
+    assert context.status_consumer.gwyOperational(0.0), (
         "BinanceMD has not published gateway_status=operational"
-    )
-    assert context.sync_probe.message_received, (
-        "BinanceMD partition FSM has not completed sync-data handshake with SDPMock"
     )
 
 

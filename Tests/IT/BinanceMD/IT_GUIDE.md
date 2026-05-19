@@ -10,7 +10,7 @@
 
 1. [Directory Layout](#1-directory-layout)
 2. [BinanceSimulator (concrete)](#2-binancesimulator-concrete)
-3. [BinanceMDProcess & SDPMockProcess](#3-binancemdprocess--sdpmockprocess)
+3. [BinanceMDProcess](#3-binancemdprocess)
 4. [Scenario Lifecycle Details](#4-scenario-lifecycle-details)
 5. [The Feature File & Gherkin Scenarios](#5-the-feature-file--gherkin-scenarios)
 6. [Step Definitions Reference](#6-step-definitions-reference)
@@ -33,7 +33,7 @@ Tests/IT/BinanceMD/
 ├── binance/
 │   └── binance_simulator.py      ← BinanceSimulator: REST + WS protocol mock
 ├── config/
-│   └── config.json               ← Config read by BinanceMD and SDPMock at runtime
+│   └── config.json               ← Config read by BinanceMD at runtime
 ├── features/
 │   ├── binance_md.feature        ← Gherkin scenarios (the source of truth)
 │   ├── environment.py            ← before_*/after_* lifecycle hooks
@@ -88,22 +88,24 @@ On SUBSCRIBE the simulator spawns a per-stream asyncio `Task` that pushes one up
 
 ---
 
-## 3. BinanceMDProcess & SDPMockProcess
+## 3. BinanceMDProcess
 
 **File:** `Tests/IT/BinanceMD/process_manager.py`
 
-Thin wrappers around `subprocess.Popen`. Both share a `_BaseProcess` base class.
+A thin wrapper around `subprocess.Popen` built on a `_BaseProcess` base class.
 
 **Binary resolution order:**
-1. Environment variable `BINANCE_MD_BINARY` / `SDPMOCK_BINARY`
-2. Default: `../../../build/MDGateways/Binance/BinanceMD` and `../../../build/SDPMock/SDPMock` (relative to `Tests/IT/BinanceMD/`)
+1. Environment variable `BINANCE_MD_BINARY`
+2. Default: `../../../build/MDGateways/Binance/BinanceMD` (relative to `Tests/IT/BinanceMD/`)
 
-Both binaries are launched with:
+The binary is launched with:
 - `cwd = Tests/IT/BinanceMD/` — so that ConfigLib finds `./config/config.json`
-- A single positional argument: the `appId` (`BinanceMD_1` or `SDPMock_1`)
-- `stdout` and `stderr` redirected to `/tmp/bmd_<scenario>.log` / `/tmp/sdp_<scenario>.log`
+- A single positional argument: the `appId` (e.g. `BinanceMD_1`)
+- `stdout` and `stderr` redirected to `/tmp/bmd_<scenario>.log`
 
 `stop()` sends `SIGTERM` and waits up to 5 s before escalating to `SIGKILL`.
+
+> **Note:** The former `SDPMockProcess` (external subprocess) has been replaced by the in-process `SDPSimulator` — see `Tests/IT/BinanceMD/binance/SDPSimulator.py`.
 
 ---
 
@@ -118,18 +120,18 @@ before_all
 └── BinanceSimulator started on HTTPS :18443, WSS :18444
 
 before_scenario
-├── status_consumer watches: gateway_status
-├── sync_probe watches: sync_data_request
-├── SDPMock launched with appId: SDPMock_1
+├── status_consumer + lifecycle_consumer watch: gateway_status / registrations
+├── SDPSimulator created in-process (responds to sync_data_request via assign())
 ├── BinanceMD launched with appId: BinanceMD_1
 │   Env: SSL_CA_CERT = path to self-signed cert
 ├── Wait ≤30 s for gateway_status = "operational"
-├── Wait ≤15 s for sync_data_request message
-└── Sleep 3.5 s settle (BinanceMD's K consumer rebalance)
+├── Wait ≤15 s for sync_data_request → SDPSimulator responds
+└── Sleep 3.5 s settle (BinanceMD's individual Kafka consumer rebalance)
 
 after_scenario
-├── SIGTERM BinanceMD_1 (SIGKILL after 5 s)
-└── SIGTERM SDPMock_1
+├── Send request_stop to BinanceMD_1 via Kafka
+├── Wait ≤2 s for app_down on registrations topic
+└── Close all Kafka helpers + SDPSimulator
 ```
 
 > **Tip:** If `before_scenario` raises a timeout error ("BinanceMD did not reach operational status"), the last 3000 characters of `/tmp/bmd_<scenario>.log` are automatically printed in the assertion message.
@@ -180,7 +182,7 @@ The `Background` step runs before every scenario and verifies the preconditions 
 
 | Gherkin | What it does |
 |---|---|
-| `Given BinanceMD is running and connected to the exchange simulator` | Asserts `bmd_process.is_running()`, `sdpmock_process.is_running()`, `gateway_operational`, and `sync_probe.message_received` |
+| `Given BinanceMD is running and connected to the exchange simulator` | Asserts `bmd_process.is_running()`, `sdp_simulator is not None`, and `status_consumer.gwyOperational()` |
 
 ### Subscribe / Unsubscribe
 
@@ -316,7 +318,6 @@ Each scenario creates two log files in `/tmp/`, capturing **stdout + stderr** of
 | Log file | Process |
 |---|---|
 | `/tmp/bmd_<scenario_tag>.log` | BinanceMD binary — NanoLog binary output + `fprintf(stderr, ...)` traces |
-| `/tmp/sdp_<scenario_tag>.log` | SDPMock binary — same format |
 
 **Examples for the 4 current scenarios:**
 ```
@@ -328,7 +329,7 @@ Each scenario creates two log files in `/tmp/`, capturing **stdout + stderr** of
 
 ### NanoLog binary log files
 
-BinanceMD and SDPMock also write a **NanoLog binary log** (distinct from the stderr file above). Files are named:
+BinanceMD also writes a **NanoLog binary log** (distinct from the stderr file above). Files are named:
 
 ```
 <appId>_<YYYYMMDD>.<rotation_number>
@@ -354,8 +355,8 @@ ThirdParty/NanoLog/runtime/decompressor \
 # 1. Kafka running locally on 127.0.0.1:9092
 docker compose up -d
 
-# 2. Build the binaries
-cd build && make BinanceMD SDPMock -j$(nproc)
+# 2. Build the binary
+cd build && make BinanceMD -j$(nproc)
 
 # 3. Activate the Python virtual environment
 cd /home/admin/code/MultiMarketPrices
@@ -472,7 +473,7 @@ Edit the constants at the top of `features/environment.py`:
 
 ```python
 OPERATIONAL_TIMEOUT_SEC  = 30   # increase if BinanceMD is slow to start
-FSM_READY_TIMEOUT_SEC    = 15   # increase if SDPMock handshake is slow
+FSM_READY_TIMEOUT_SEC    = 15   # increase if SDPSimulator handshake is slow
 FSM_SETTLE_SEC           = 0.5  # brief sleep after sync_data_request seen
 ```
 
@@ -503,7 +504,7 @@ _DEFAULT_INSTRUMENTS = [
 
 **File:** `Tests/IT/BinanceMD/config/config.json`
 
-Both BinanceMD and SDPMock read this file at runtime (ConfigLib resolves it as `./config/config.json` relative to process CWD = `Tests/IT/BinanceMD/`).
+BinanceMD reads this file at runtime (ConfigLib resolves it as `./config/config.json` relative to process CWD = `Tests/IT/BinanceMD/`).
 
 | Field | Value | Notes |
 |---|---|---|
@@ -520,7 +521,7 @@ Both BinanceMD and SDPMock read this file at runtime (ConfigLib resolves it as `
 
 ## 14. BinanceMD-Specific Pitfalls
 
-The generic pitfalls (consumer.clear(), SDPMock ordering, session.timeout.ms, TLS SAN, SSL_clear) are documented in [`../IT_FRAMEWORK_GUIDE.md §8`](../IT_FRAMEWORK_GUIDE.md#8-common-pitfalls--lessons-learned). The following are specific to this suite.
+The generic pitfalls (consumer.clear(), SDPSimulator ordering, session.timeout.ms, TLS SAN, SSL_clear) are documented in [`../IT_FRAMEWORK_GUIDE.md §8`](../IT_FRAMEWORK_GUIDE.md#8-common-pitfalls--lessons-learned). The following are specific to this suite.
 
 ---
 

@@ -57,8 +57,8 @@ Scenarios are written in **Gherkin** and executed with **behave** (Python). This
  │              │                │                        │               │
  │              ▼                ▼                        │               │
  │  ┌──────────────────┐  ┌────────────────┐             │               │
- │  │ ExchangeSimulator │  │  SDPMockProcess│             │               │
- │  │ (HTTPS :RPORT)   │  │  (subprocess)  │             │               │
+ │  │ ExchangeSimulator │  │  SDPSimulator   │             │               │
+ │  │ (HTTPS :RPORT)   │  │  (in-process)  │             │               │
  │  │ (WSS  :WPORT)    │  └────────────────┘             │               │
  │  └──────────┬───────┘                                  │               │
  │             │ TLS/WSS                    Kafka produce │               │
@@ -126,13 +126,13 @@ Tests/
         ├── binance/
         │   └── binance_simulator.py    ← Concrete Binance protocol simulator
         ├── config/
-        │   └── config.json             ← Test config for BinanceMD + SDPMock
+        │   └── config.json             ← Test config for BinanceMD at runtime
         ├── features/
         │   ├── binance_md.feature      ← Gherkin scenarios
         │   ├── environment.py          ← before_*/after_* lifecycle hooks
         │   └── steps/
         │       └── binance_md_steps.py ← Given/When/Then implementations
-        ├── process_manager.py          ← Subprocess lifecycle for BinanceMD + SDPMock
+        ├─── process_manager.py          ← Subprocess lifecycle for BinanceMD
         ├── requirements.txt            ← Python deps (behave, confluent-kafka, ...)
         ├── Dockerfile.it               ← CI Docker image
         └── docker-compose.it.yml       ← Full-stack CI compose file
@@ -210,7 +210,7 @@ Receives trade/depth update messages that the gateway publishes.
 Used by `before_scenario` to wait for readiness signals.
 
 - **`KafkaStatusConsumer`** watches the `gateway_status` topic. Its `gateway_operational` flag flips `True` once the gateway publishes `{"md_gw_status": "operational"}`. The harness polls this with a configurable timeout.
-- **`KafkaTopicProbe`** watches an arbitrary topic. Its `message_received` flag flips `True` when the first message arrives — used to detect that the per-partition FSM has completed its initial sync handshake with SDPMock. Only after this is the gateway ready to process subscriptions.
+- **`KafkaTopicProbe`** watches an arbitrary topic. Its `message_received` flag flips `True` when the first message arrives — used to detect that the per-partition FSM has completed its initial sync handshake with the SDPSimulator. Only after this is the gateway ready to process subscriptions.
 
 Both have a `warm_up(timeout_sec)` method that blocks until Kafka partition assignment is confirmed — this ensures they don't miss very early messages from a fast-starting gateway.
 
@@ -262,9 +262,9 @@ before_scenario (once per scenario)
 ├── 3. warm_up() status_consumer and sync_probe
 │      Waits for Kafka partition assignment before any process starts
 │
-├── 4. Start SDPMock subprocess
-│      Must start BEFORE the gateway so its consumer group is registered
-│      before the gateway's partition rebalance fires (see Section 8)
+├── 4. Create the SDPSimulator (in-process; uses assign() — no rebalance delay)
+│      Must be created BEFORE the gateway so it is ready to respond to the
+│      first sync_data_request immediately after the partition rebalance fires
 │
 ├── 5. Start gateway binary subprocess
 │      Env: SSL_CA_CERT = path to self-signed cert
@@ -272,8 +272,8 @@ before_scenario (once per scenario)
 ├── 6. Wait for gateway_status = operational
 │      Confirms: Kafka middleware up, REST connections established, WS connected
 │
-├── 7. Wait for sync_data_request message
-│      Confirms: per-partition FSM assigned + SDPMock responded
+├── 7. Wait for sync_data_request message + SDPSimulator responds
+│      Confirms: per-partition FSM assigned, download request sent and answered
 │      → FSM is now in Operational state, ready to process subscriptions
 │
 └── 8. Brief settle sleep
@@ -283,9 +283,9 @@ before_scenario (once per scenario)
 
 after_scenario
 │
-├── SIGTERM gateway binary (SIGKILL after 5s)
-├── SIGTERM SDPMock
-└── Close all Kafka helpers
+├── Send request_stop to gateway via Kafka
+├── Wait for app_down on registrations topic
+└── Close all Kafka helpers + SDPSimulator
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -296,8 +296,8 @@ after_all
 └── Delete TLS temp directory
 ```
 
-> **Why start SDPMock before the gateway?**  
-> The gateway's Kafka partition rebalance fires on startup and immediately emits a `sync_data_request`. If SDPMock hasn't registered its consumer group yet, nobody reads that message and the FSM stays stuck in `Downloading` forever. Starting SDPMock first ensures the group is registered before the gateway emits its first request. See also [Section 8 — SDPMock ordering pitfall](#start-sdpmock-before-the-gateway).
+> **Why create SDPSimulator before starting the gateway?**  
+> The gateway's Kafka partition rebalance fires on startup and immediately emits a `sync_data_request`. The SDPSimulator uses `assign()` (no consumer group, no rebalance), so it is ready to respond the moment it is created. Creating it in-process before the gateway subprocess starts guarantees it is listening before the first request lands on the topic. See also [Section 8 — SDPSimulator ordering](#sdpsimulator-must-be-created-before-the-gateway).
 
 ---
 
@@ -351,7 +351,7 @@ Tests/IT/<GW>/
 ├── <gw>/
 │   └── <gw>_simulator.py  ← Subclass of ExchangeSimulator
 ├── config/
-│   └── config.json         ← Config read by the gateway and SDPMock binaries
+│   └─── config.json         ← Config read by the gateway binary at runtime
 ├── features/
 │   ├── <gw>.feature        ← Gherkin scenarios
 │   ├── environment.py      ← before_*/after_* lifecycle hooks
@@ -449,23 +449,25 @@ context.consumer.drain(duration_sec=4)
 
 ---
 
-### Start SDPMock BEFORE the gateway
+### SDPSimulator must be created before the gateway
 
-**Symptom:** The gateway starts, but the FSM never reaches `Operational`. The `sync_data_request` probe never fires.
+**Symptom:** The gateway starts, but the FSM never reaches `Operational`. The `sync_data_request` message is never answered.
 
-**Root cause:** The gateway's Kafka partition rebalance fires on startup. It sends a `sync_data_request` immediately. If SDPMock's consumer group hasn't registered yet, nobody reads the message and the FSM waits forever.
+**Root cause:** The gateway's Kafka partition rebalance fires on startup and it immediately emits a `sync_data_request`. If the SDPSimulator is not yet listening, nobody answers the request and the FSM stays stuck in `Downloading` forever.
 
-**Fix:** Always start SDPMock first and wait for its consumer to be assigned before starting the gateway binary (`before_scenario` steps 4 and 5).
+**Fix:** Create the SDPSimulator (in-process, using `assign()`) before launching the gateway subprocess. Because `assign()` does not require a Kafka group rebalance it is ready instantly, eliminating the timing race entirely.
 
 ---
 
 ### Consumer group `session.timeout.ms` must be low
 
-**Symptom:** The second scenario hangs for ~45 seconds then fails with a Kafka subscribe timeout in SDPMock.
+**Symptom:** The second scenario hangs for ~45 seconds then fails waiting for gateway readiness.
 
-**Root cause:** Kafka's default `session.timeout.ms` is 45 seconds. When the previous scenario's SDPMock dies, the broker keeps that consumer group membership live for 45 seconds. The next scenario's SDPMock tries to join the same group; `subscribe()` hangs for the full session expiry window.
+**Root cause:** Kafka's default `session.timeout.ms` is 45 seconds. When the previous scenario's gateway process dies, the broker keeps that consumer group membership live for 45 seconds. The next scenario's gateway tries to rejoin the same group; the rebalance stalls for the full session expiry window.
 
-**Fix:** Set `session.timeout.ms: 6000` (and `heartbeat.interval.ms: 2000`) in `config.json` under `middleware_params` for **both** the gateway and SDPMock. This reduces the maximum hang to 6 seconds.
+**Fix:** Set `session.timeout.ms: 6000` (and `heartbeat.interval.ms: 2000`) in `config.json` under `middleware_params` for the gateway. This reduces the maximum hang to 6 seconds.
+
+> **Note:** This only applies to the gateway's own Kafka consumer group. The SDPSimulator uses `assign()` and therefore has no group and no session timeout issue.
 
 ---
 
